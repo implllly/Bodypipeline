@@ -19,6 +19,7 @@ def write_hdf5_preset(
     episode: Path,
     *,
     name: str,
+    extra_numeric_fields: tuple[str, ...] = (),
 ) -> Path:
     import h5py
 
@@ -33,7 +34,7 @@ def write_hdf5_preset(
                     "target_key": key,
                     "width": int(dataset.attrs["width"]),
                     "height": int(dataset.attrs["height"]),
-                    "encoded_format": "jpeg",
+                    "encoded_format": str(dataset.attrs.get("encoded_format", "jpeg")),
                 }
             )
     preset = {
@@ -53,11 +54,12 @@ def write_hdf5_preset(
                     "dtype": "float32",
                     "names": (
                         list(profile["joint_names"])
-                        if isinstance(profile.get("joint_names"), list)
+                        if key in ("action", "observation.state")
+                        and isinstance(profile.get("joint_names"), list)
                         else None
                     ),
                 }
-                for key in ("action", "observation.state")
+                for key in ("action", "observation.state", *extra_numeric_fields)
             ],
             "video_fields": cameras,
         },

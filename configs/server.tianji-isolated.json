@@ -1,0 +1,25 @@
+{
+  "root": "/var/lib/bodypipeline/tianji/server",
+  "data_root": "/srv/bodypipeline/tianji",
+  "import_roots": [
+    "/var/lib/bodypipeline/tianji/captures"
+  ],
+  "processing_mode": "real",
+  "auto_process": false,
+  "letools_bin": "/opt/bodypipeline/native/bin/letools",
+  "robot_id": "marvin-pro-001",
+  "project_id": "bodypipeline-tianji",
+  "profiles": {
+    "tianji_marvin_pro": {
+      "profile_path": "configs/tianji-marvin-pro-v1.json",
+      "provider": "tianji",
+      "raw_formats": [
+        "tianji_apex_mcap_v1"
+      ]
+    }
+  },
+  "default_profile": "tianji_marvin_pro",
+  "viewer_origin": "http://pipeline-tianji:8102",
+  "viewer_ui_port": 3112,
+  "viewer_data_port": 8772
+}

@@ -25,7 +25,7 @@ def stopped_capture(service, key="latency-test-001"):
 
 
 def test_slow_sealing_does_not_lock_robot_control(settings_factory, monkeypatch):
-    import pipeline.client.service as module
+    import pipeline.client.packagers as module
 
     service = CaptureService(settings_factory())
     first = stopped_capture(service)

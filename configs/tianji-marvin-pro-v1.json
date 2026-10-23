@@ -1,0 +1,123 @@
+{
+  "id": "tianji_marvin_pro_apex_v1",
+  "version": 1,
+  "control_mode": "teleoperation",
+  "robot_type": "tianji_marvin_pro",
+  "semantics_approved": true,
+  "clock_verified": true,
+  "joint_names": [
+    "left_joint_1_rad",
+    "left_joint_2_rad",
+    "left_joint_3_rad",
+    "left_joint_4_rad",
+    "left_joint_5_rad",
+    "left_joint_6_rad",
+    "left_joint_7_rad",
+    "left_gripper_normalized",
+    "right_joint_1_rad",
+    "right_joint_2_rad",
+    "right_joint_3_rad",
+    "right_joint_4_rad",
+    "right_joint_5_rad",
+    "right_joint_6_rad",
+    "right_joint_7_rad",
+    "right_gripper_normalized"
+  ],
+  "joint_units": [
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "normalized",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "normalized"
+  ],
+  "output_fps": 50,
+  "minimum_frames": 2,
+  "native_provider_version": "0.7.0",
+  "cameras": [
+    {
+      "id": "head_left",
+      "label": "head_left",
+      "mounting": "scene"
+    },
+    {
+      "id": "head_right",
+      "label": "head_right",
+      "mounting": "scene"
+    },
+    {
+      "id": "left_wrist",
+      "label": "left_wrist",
+      "mounting": "wrist_left"
+    },
+    {
+      "id": "right_wrist",
+      "label": "right_wrist",
+      "mounting": "wrist_right"
+    }
+  ],
+  "notes": [
+    "Verified against installed Apex source and tianji-provider 0.7.0. A=left and B=right; joints are reordered by recorded names.",
+    "Actions are the recorded joint_cmd_A/B and gripperValueL/R; feedback is never substituted.",
+    "Grippers use recorded web_gripper calibration and normalized units; no metric opening assumption or clipping.",
+    "Timestamp source/domain is checked per recording by the native provider. Software alignment is verified; synchronized camera exposure is not claimed.",
+    "Native defaults: 100ms observation/joint command, 150ms gripper command age, lowpass state, 200Hz causal wrench windows, stationary-edge trimming.",
+    "Four recorded quad tiles are preserved at native resolution. Lossless PNG is an intermediate, not an image training transform."
+  ],
+  "auxiliary_feature_metadata": {
+    "observation.wrench_windows": {
+      "sampling_rate_hz": 200,
+      "sampling_policy": "previous_raw_sample",
+      "window_anchor": "last_sample",
+      "filtered": false,
+      "sample_offsets_seconds": [
+        -0.015,
+        -0.01,
+        -0.005,
+        0
+      ],
+      "component_names": [
+        "left_flange_fx_N",
+        "left_flange_fy_N",
+        "left_flange_fz_N",
+        "left_flange_tx_Nm",
+        "left_flange_ty_Nm",
+        "left_flange_tz_Nm",
+        "right_flange_fx_N",
+        "right_flange_fy_N",
+        "right_flange_fz_N",
+        "right_flange_tx_Nm",
+        "right_flange_ty_Nm",
+        "right_flange_tz_Nm"
+      ]
+    },
+    "observation.eef": {
+      "names": [
+        "left_base_link_x_m",
+        "left_base_link_y_m",
+        "left_base_link_z_m",
+        "left_base_link_qx",
+        "left_base_link_qy",
+        "left_base_link_qz",
+        "left_base_link_qw",
+        "right_base_link_x_m",
+        "right_base_link_y_m",
+        "right_base_link_z_m",
+        "right_base_link_qx",
+        "right_base_link_qy",
+        "right_base_link_qz",
+        "right_base_link_qw"
+      ]
+    }
+  }
+}

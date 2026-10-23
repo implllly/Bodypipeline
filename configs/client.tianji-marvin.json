@@ -1,0 +1,23 @@
+{
+  "root": "/var/lib/bodypipeline/tianji/client",
+  "mode": "ros2",
+  "capture_adapter": "apex",
+  "capture_packager": "tianji_mcap",
+  "capture_options": {
+    "url": "http://127.0.0.1:8080",
+    "allow_recording": false,
+    "project_id": "bodypipeline-tianji",
+    "storage_root": "/var/lib/bodypipeline/tianji/recordings",
+    "preview_root": "/var/lib/bodypipeline/tianji/preview"
+  },
+  "robot_id": "marvin-pro-001",
+  "project_id": "bodypipeline-tianji",
+  "profile_path": "configs/tianji-marvin-pro-v1.json",
+  "server_url": "http://pipeline-server:8081",
+  "local_roots": {
+    "default": "/var/lib/bodypipeline/tianji/captures"
+  },
+  "replay": {
+    "enabled": false
+  }
+}

@@ -4,7 +4,14 @@ from urllib.parse import urlencode
 from fastapi.responses import FileResponse, RedirectResponse
 
 ASSETS = Path(__file__).resolve().parents[1] / "web"
-BASE_ASSETS = {"app.js", "clipboard.js", "style.css", "theme.js", "theme.css", "client-replay.js"}
+BASE_ASSETS = {
+    "app.js",
+    "clipboard.js",
+    "style.css",
+    "theme.js",
+    "theme.css",
+    "client-replay.js",
+}
 REPORT_ASSETS = {"report.js", "report.css"}
 
 
