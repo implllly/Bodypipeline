@@ -15,19 +15,13 @@ from pipeline.shared.core import (
     atomic_json,
     confined,
     digest,
-    file_hash,
     fsync_dir,
     now,
     safe_relative,
 )
-from pipeline.shared.hdf5 import (
-    AGILEX_HDF5_FILENAME,
-    AGILEX_HDF5_FORMAT,
-    package_agilex_capture,
-)
 
-from .adapters.mock import MockAdapter
-from .adapters.ros2 import Ros2Adapter
+from .adapters.registry import create_adapter
+from .packagers import create_packager
 
 BUSY = {"STARTING", "RECORDING", "STOPPING", "RECOVERY_REQUIRED"}
 
@@ -37,11 +31,8 @@ class CaptureService:
         self.settings = settings
         self.store = Store(settings.root / "state", legacy_name="client.sqlite")
         self.profile = settings.profile()
-        self.adapter = adapter or (
-            MockAdapter(self.profile)
-            if settings.mode == "mock"
-            else Ros2Adapter(settings)
-        )
+        self.adapter = adapter or create_adapter(settings)
+        self.packager = create_packager(settings.capture_packager)
         self.lock = threading.RLock()
         self.seal_lock = threading.Lock()
         self.roots = {
@@ -117,7 +108,7 @@ class CaptureService:
                     "profile": self.profile,
                     "profile_hash": digest(self.profile),
                     "capture_mode": self.settings.mode,
-                    "raw_format": AGILEX_HDF5_FORMAT,
+                    "raw_format": self.packager.raw_format,
                 },
                 body["remote_target"],
                 remote_prefix,
@@ -172,7 +163,7 @@ class CaptureService:
                 "profile": row["profile"],
                 "profile_hash": row["profile_hash"],
                 "capture_mode": row["mode"],
-                "raw_format": AGILEX_HDF5_FORMAT,
+                "raw_format": row.get("raw_format", self.packager.raw_format),
             },
             row["remote_target"],
             row.get("remote_prefix", ""),
@@ -303,10 +294,8 @@ class CaptureService:
                 root = Path(row["raw_root"])
                 if root.resolve() != root or root.is_symlink():
                     raise DomainError("原始采集目录不能是符号链接")
-                package = root.parent / AGILEX_HDF5_FILENAME
-                package_stats = package_agilex_capture(
+                sealed = self.packager.seal(
                     root,
-                    package,
                     row["profile"],
                     metadata={
                         "session_id": cid,
@@ -320,19 +309,13 @@ class CaptureService:
                         "profile_hash": row["profile_hash"],
                     },
                 )
-                files = [
-                    {
-                        "path": AGILEX_HDF5_FILENAME,
-                        "size_bytes": package_stats["size_bytes"],
-                        "sha256": file_hash(package),
-                    }
-                ]
+                files = sealed.pop("files")
                 manifest = {
                     "manifest_version": 1,
                     "session_id": cid,
                     "robot_id": row["robot_id"],
                     "project_id": row["project_id"],
-                    "raw_format": AGILEX_HDF5_FORMAT,
+                    "raw_format": self.packager.raw_format,
                     "capture_mode": row["mode"],
                     "control_mode": "teleoperation",
                     "profile": row["profile"],
@@ -349,9 +332,7 @@ class CaptureService:
                     state="SEALED",
                     manifest_hash=digest(manifest),
                     upload_state="QUEUED",
-                    package_path=str(package),
-                    package_schema=package_stats["schema"],
-                    package_stats=package_stats,
+                    **sealed,
                     file_count=len(files),
                     total_bytes=sum(f["size_bytes"] for f in files),
                     uploaded_bytes=0,

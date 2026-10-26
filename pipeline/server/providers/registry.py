@@ -8,10 +8,12 @@ from pipeline.shared.runtime import RobotRuntime
 from .agilex import AgileXProvider
 from .aloha_hdf5 import AlohaHDF5Provider
 from .base import RobotProvider
+from .tianji import TianjiProvider
 
 _PROVIDERS: dict[str, RobotProvider] = {
     "agilex": AgileXProvider(),
     "aloha_hdf5": AlohaHDF5Provider(),
+    "tianji": TianjiProvider(),
 }
 
 
