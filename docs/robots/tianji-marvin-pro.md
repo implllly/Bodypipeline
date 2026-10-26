@@ -54,6 +54,10 @@ stop只操作自己的session，等待Apex写入排空再封存。关闭Client�
 
 Python主环境使用本项目`uv.lock`。原生worker使用部署方配置的`PIPELINE_TIANJI_PYTHON`，要求该环境已有tianji-provider0.7.0及其LeTools/native依赖。该路径不接受网页/Manifest输入。不要向现有Apex/ForceVLA环境安装包。中心Server也需要这套原生依赖；仅拷贝Profile或网页密钥不能完成接入。
 
+通用转换/Visualizer工具环境按`scripts/install_letools.sh`使用仓库锁定版本安装；原生worker环境另行安装与tianji-provider0.7.0兼容的LeTools。两者不应强行共用同一个LeTools版本。原生Provider为外部部署依赖，本PR没有将其源码或wheel内置；部署方需要提供可用的0.7.0安装包。
+
+若主机已有其他数据平台，给本实例显式设置`LETOOLS_PROVIDERS_FILE`，指向其自己的Provider配置，避免误加载用户级`~/.config/letools/providers.toml`。不要改动其他平台的配置。Visualizer需要Bun1.3.9，可通过Server配置`viewer_bun`指定独立可执行路径。
+
 启动命令均在候选release根执行，并预先加载独立认证环境文件：
 
 ```bash
@@ -64,6 +68,8 @@ Python主环境使用本项目`uv.lock`。原生worker使用部署方配置的`P
 预览需在ROS Jazzy系统Python ABI兼容环境下加载ROS环境，并运行 `scripts/tianji_preview.py --root <preview_root>`。它持续解码所有H.264包，仅覆盖已解码画面；缩略图处理在线程中完成，保留真实源时间，过期图不显示。
 
 实际部署必须使用不可变release、独立端口/状态根/数据根；共享Server的增量发布须经过全机队回归和维护窗口确认。不要直接覆盖正在运行的统一Server源码、配置或虚拟环境。
+
+已有LeRobot v2.1/v3.0通过Server的“导入历史数据”原地登记，出现在“预览与质检”，不会作为MCAP出现在原始转换下拉框。`import_roots`应包含数据集的父目录，例如`/srv/datasets/tianji`，而数据集位于其下的`pick_and_place`等子目录；Viewer会拒绝把配置的存储根本身当成可管理的数据集。登记成功不代表重新转换或Doctor通过，原始字段名也不会在导入时改写。
 
 ## 离线验收
 
@@ -77,3 +83,15 @@ PIPELINE_TIANJI_PYTHON=/path/to/native/bin/python \
 验证脚本不导入ROS、不调用Apex；输出必须是原始目录之外的新目录。原始SHA256前后比对、对齐、QC、双版本转换、deep validation和Doctor报告均独立保存。Doctor WARN照实保留，不通过隐藏检查生成PASS。
 
 最低覆盖包括：丢失start响应、重复start/stop、owner改变、writer未关闭、禁用录制、关闭只读、缺视频、符号链接、16维与四相机QC、辅助字段mapping、分块上传ACK与跨Runtime拒绝。真机采集与回放必须等现场授权后单独验收，离线测试不证明这些已通过。
+
+## 已执行验证与边界
+
+2026-10-26在独立候选实例上完成了以下验证；没有启动真机录制或发送控制命令：
+
+- 完整回归为216项通过、12项跳过；发布检查中的锁文件、Ruff、格式、JavaScript语法及diff检查通过。跳过项不能视为相应工具或硬件已验收。
+- 四路实时只读相机预览可读；两个已有LeRobot数据集完成原地登记，预览页面HTTP200，逐路首个视频Range读取206。未对这两套完整数据运行Doctor或全视频播放验收。
+- 明确标记`capture_mode=mock`和合成来源的60帧MCAP，经真实设备上传API完成分块提交、摘要校验、重复session和持久化回执检查；无认证请求与未知原始格式被拒绝。
+- 同一合成输入经Server实际完成v2.1/v3.0转换与deep validation；action、state、EEF、wrench回读与对齐HDF5逐值一致，且action不等于state。两版本共8路视频、480帧经Viewer网关读取解码，PTS为`i/50`，Range请求为206；原始SHA256不变。
+- 两版本Doctor均为WARN，原因包括合成短轨迹和固定维度；任务如实标记QUARANTINED，不能称为真实数据质量通过。
+
+另抽查21条旧真实录制，因命令过期/缺失或观测反馈缺口被原生0.7.0拒绝。未放宽阈值或补造action。真实正样本采集、停止排空以及完整转换仍需后续单独验收；本次仅验证严格拒绝行为与合成正样本链路。新实例的录制和回放开关保持关闭，原有平台服务持续运行，共享Server尚未切换。
