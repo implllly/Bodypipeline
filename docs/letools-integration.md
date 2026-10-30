@@ -320,6 +320,33 @@ uv run --with pyarrow python scripts/preview_annotations.py
 
 脚本会应用本仓库的 Viewer 补丁，生成两条含三路合成视频的 LeRobot v2.1 数据，并启动 Mock Client（18080）、Server（18081）和 Viewer（18082，内部 UI 13100）。这些服务只监听 `127.0.0.1`，运行数据及配置位于 `.runtime/annotation-preview/`。打开 `http://127.0.0.1:18082/annotation-demo.html`，演示登录密码为 `annotation-demo`，按 Ctrl+C 停止本次服务。
 
+### 批量视频预览
+
+管理台“预览与质检”的数据集行增加“批量预览”，单条 Viewer 的侧边栏也可进入。
+页面路径为 `/<org>/<dataset>/batch`，支持每批 **4 / 9 / 16 / 32** 个 Episode，
+统一选择摄像头、静音播放/暂停、0.5–4 倍速、从头播放、按各自时长百分比定位与翻批。
+视频播完停在末帧；v3.0 共享视频文件按各 Episode 的摄像头时间范围播放。
+双击画面或点放大按钮可放大，Esc 返回，原播放器与播放位置保留。
+每格可标记“待检查”、筛选待检查数据，或进入现有单条标注页面。
+
+待检查标记与单条 Viewer 的旗标共用，按数据集保存在当前浏览器 `localStorage`，
+刷新仍保留、同源标签页同步，不作为服务端标注字段导出。永久清理重编号时跟随回收站映射。
+旧版无数据集归属的 `sessionStorage` 旗标不会自动分配给某个数据集。
+软删除的 Episode 不进入批量播放；切换批次或视角会暂停并释放上一批播放器。
+后台标签页暂停，重新聚焦会刷新目录，以读取其他窗口的清理结果。
+仅读取 Episode 元数据，不读取逐帧动作数据，也不使用帧总览的抽样上限。
+小屏幕减少网格列数，32 路仍可用，必要时滚动查看；实际解码流畅度取决于视频分辨率和设备。
+
+本地 40 条数据演示（3 个视角，6 / 9 / 12 秒，含冻结和偏暗画面）：
+
+```bash
+uv run --with pyarrow python scripts/preview_annotations.py --batch \
+  --viewer-source .runtime/annotation-preview/viewer/source
+```
+
+启动后使用终端打印的批量预览链接，密码同为 `annotation-demo`。
+mock 数据单独写入 `datasets/mock-batch-preview-v1`，保留原两条标注演示数据。
+
 脚本首次启动会通过真实保存接口在演示 Server 中建立示例模板、重试片段和评价；已有服务端草稿不会被覆盖。演示入口保留旧浏览器示例，便于手动验证旧记录导入。可用 `--viewer-source <独立缓存>/source` 选择其他固定版本的演示源码缓存；该缓存会被应用界面补丁并采用本机字体，不要指向正在使用的生产 Viewer 缓存。
 
 预览需要可用的 LeTools Python 环境读取源数据并执行修订导出，使用合成数据，不会调用付费 AI 或连接机器人。浏览器新窗口打开后可以读取已保存的 Server 草稿。

@@ -430,6 +430,9 @@ def run_role(role: str):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--role", choices=["server", "viewer", "client"])
+    parser.add_argument(
+        "--batch", action="store_true", help="生成 40 条数据，打开批量视频预览"
+    )
     parser.add_argument("--viewer-source", type=Path, default=RUNTIME / "viewer/source")
     parser.add_argument("--node", default="node")
     args = parser.parse_args()
@@ -455,6 +458,7 @@ def main():
             device_token=secrets.token_urlsafe(32),
             login_password="annotation-demo",
             viewer_origin="http://127.0.0.1:18082",
+            server_url="http://127.0.0.1:18081",
             viewer_ui_port=13100,
             viewer_ttl=7 * 24 * 3600,
             auto_process=False,
@@ -463,10 +467,11 @@ def main():
         with os.fdopen(descriptor, "w") as handle:
             json.dump(config, handle, indent=2)
     config = json.loads(config_path.read_text())
+    config["server_url"] = "http://127.0.0.1:18081"
     tool = ROOT / ".runtime/letools-venv/bin/letools"
     if tool.is_file():
         config["letools_bin"] = str(tool)
-        config_path.write_text(json.dumps(config, indent=2))
+    config_path.write_text(json.dumps(config, indent=2))
     client = json.loads((ROOT / "configs/client.mock.json").read_text())
     client.update(
         root=str(RUNTIME / "client"),
@@ -478,8 +483,17 @@ def main():
     client_path = RUNTIME / "client.json"
     client_path.write_text(json.dumps(client, indent=2))
     client_path.chmod(0o600)
-    dataset = RUNTIME / "datasets/mock-annotation-demo-v2"
-    generate_dataset(dataset)
+    dataset = (
+        RUNTIME
+        / "datasets"
+        / ("mock-batch-preview-v1" if args.batch else "mock-annotation-demo-v2")
+    )
+    if args.batch:
+        from scripts.mock_batch_dataset import generate_batch_dataset
+
+        generate_batch_dataset(dataset)
+    else:
+        generate_dataset(dataset)
     from pipeline.server.app import create_app
     from pipeline.server.subtask_review import DraftRequest, SubtaskReview
     from pipeline.server.task_annotations import (
@@ -511,6 +525,14 @@ def main():
                 'import type { Metadata } from "next";\nimport { Inter } from "next/font/google";',
             )
         layout.write_text(text)
+    # Removing the Google-font import leaves an empty line in the demo cache.
+    # The pinned presentation patch expects these imports to be adjacent.
+    layout.write_text(
+        layout.read_text().replace(
+            'import { Inter } from "next/font/google";\n\nimport "./globals.css";',
+            'import { Inter } from "next/font/google";\nimport "./globals.css";',
+        )
+    )
     patch_cache(source.parent)
     patch_channel_charts(source.parent)
     patch_presentation(source.parent)
@@ -525,6 +547,11 @@ def main():
         {"id": "service", "state": "READY", "mode": "local-mock-preview"},
     )
     template, document = demo_bootstrap(source, dataset_id)
+    preview_url = (
+        f"http://127.0.0.1:18082/bp/{dataset_id}/batch"
+        if args.batch
+        else "http://127.0.0.1:18082/annotation-demo.html"
+    )
     review = SubtaskReview(settings, app.state.ingest.store)
     initial = review.episode(dataset_id, 0)
     if not initial["has_draft"]:
@@ -606,13 +633,13 @@ def main():
                 )
             )
         print(
-            "Mock Client: http://127.0.0.1:18080\nServer: http://127.0.0.1:18081\n标注预览: http://127.0.0.1:18082/annotation-demo.html\n本地演示登录密码: annotation-demo\nCtrl-C 停止本次预览。",
+            f"Mock Client: http://127.0.0.1:18080\nServer: http://127.0.0.1:18081\n预览: {preview_url}\n本地演示登录密码: annotation-demo\nCtrl-C 停止本次预览。",
             flush=True,
         )
         (RUNTIME / "preview.json").write_text(
             json.dumps(
                 {
-                    "url": "http://127.0.0.1:18082/annotation-demo.html",
+                    "url": preview_url,
                     "dataset_id": dataset_id,
                     "viewer_url": f"http://127.0.0.1:18082/bp/{dataset_id}/episode_0",
                     "pids": [p.pid for p in children],

@@ -561,6 +561,11 @@ document.addEventListener("click", (e) => {
     action(async () => {
       try {
         const preview = await api(`/api/jobs/${v.dataset.viewer}/viewer`, "POST");
+        if (v.dataset.viewerMode === "batch") {
+          const url = new URL(preview.url);
+          url.pathname = url.pathname.replace(/\/episode_\d+\/?$/, "/batch");
+          preview.url = url.href;
+        }
         selectJob(v.dataset.viewer);
         setServerTab("results");
         if (popup && !popup.closed) {
@@ -1085,7 +1090,7 @@ function renderServer(uploads, jobs) {
   ).join("") : '<tr><td colspan="5" class="empty">请选择机器人类型，查看该类型的转换任务。</td></tr>';
   const available = jobs.filter((j) => j.dataset_available);
   $("result-list").innerHTML = available.length ? available.map((j) =>
-    `<tr><td><strong class="task-name">${esc(j.dataset_name || j.instruction || j.id.slice(0, 12))}</strong><span class="sub">${esc(j.id.slice(0, 12))} · ${esc(episodeSelectionSummary(j))}</span><span class="sub">${j.operation === "version_conversion" ? `版本转换：${esc(j.source_format)} → ${esc(j.target_format)}` : esc(j.instruction)}</span></td><td>LeRobot ${esc(j.target_format)}</td><td>${jobBadge(j)} ${sourceBadge(j)}</td><td>${datasetLocation(j)}</td><td><div class="action-row"><button class="primary" data-viewer="${esc(j.id)}">预览数据</button><button class="secondary" data-doctor="${esc(j.id)}">运行质检</button><button class="secondary" data-report-page="${esc(j.id)}">查看报告</button></div></td></tr>`
+    `<tr><td><strong class="task-name">${esc(j.dataset_name || j.instruction || j.id.slice(0, 12))}</strong><span class="sub">${esc(j.id.slice(0, 12))} · ${esc(episodeSelectionSummary(j))}</span><span class="sub">${j.operation === "version_conversion" ? `版本转换：${esc(j.source_format)} → ${esc(j.target_format)}` : esc(j.instruction)}</span></td><td>LeRobot ${esc(j.target_format)}</td><td>${jobBadge(j)} ${sourceBadge(j)}</td><td>${datasetLocation(j)}</td><td><div class="action-row"><button class="primary" data-viewer="${esc(j.id)}">预览数据</button><button class="secondary" data-viewer="${esc(j.id)}" data-viewer-mode="batch">批量预览</button><button class="secondary" data-doctor="${esc(j.id)}">运行质检</button><button class="secondary" data-report-page="${esc(j.id)}">查看报告</button></div></td></tr>`
   ).join("") : '<tr><td colspan="5" class="empty">请选择机器人类型，查看该类型已转换的数据集。受阻任务的原因可在“数据转换”查看。</td></tr>';
   updateMergeSelection();
   renderMergeJobs(jobs.filter((j) => j.operation === "merge"));
@@ -1201,7 +1206,7 @@ $("merge-form").onsubmit = (event) => {
   });
 };
 function renderMergeJobs(jobs) {
-  $("merge-job-list").innerHTML = jobs.length ? jobs.map((j) => `<tr><td><strong class="task-name">${esc(j.dataset_name)}</strong><span class="sub">${esc(j.id.slice(0, 12))} · LeRobot ${esc(j.target_format)}</span></td><td>${j.merge_source_count} 个数据集<span class="sub">${j.source_count} episodes · ${j.frame_count} 帧</span></td><td>${esc(j.stage)}${j.error ? `<span class="sub job-error">${esc(j.error)}</span>` : ""}</td><td>${jobBadge(j)} ${sourceBadge(j)}</td><td><div class="action-row">${j.dataset_available ? `<button class="primary" data-viewer="${esc(j.id)}">预览数据</button><button class="secondary" data-detail="${esc(j.id)}">查看结果</button>` : ["FAILED", "INTERRUPTED"].includes(j.state) ? `<button class="secondary" data-merge-retry="${esc(j.id)}">重新选择 / 重试</button><button class="secondary" data-detail="${esc(j.id)}">查看详情</button>` : '<span class="small muted">后台处理中</span>'}</div></td></tr>`).join("") : '<tr><td colspan="5" class="empty">该机器人类型暂无合并任务。提交后可在此查看进度和结果。</td></tr>';
+  $("merge-job-list").innerHTML = jobs.length ? jobs.map((j) => `<tr><td><strong class="task-name">${esc(j.dataset_name)}</strong><span class="sub">${esc(j.id.slice(0, 12))} · LeRobot ${esc(j.target_format)}</span></td><td>${j.merge_source_count} 个数据集<span class="sub">${j.source_count} episodes · ${j.frame_count} 帧</span></td><td>${esc(j.stage)}${j.error ? `<span class="sub job-error">${esc(j.error)}</span>` : ""}</td><td>${jobBadge(j)} ${sourceBadge(j)}</td><td><div class="action-row">${j.dataset_available ? `<button class="primary" data-viewer="${esc(j.id)}">预览数据</button><button class="secondary" data-viewer="${esc(j.id)}" data-viewer-mode="batch">批量预览</button><button class="secondary" data-detail="${esc(j.id)}">查看结果</button>` : ["FAILED", "INTERRUPTED"].includes(j.state) ? `<button class="secondary" data-merge-retry="${esc(j.id)}">重新选择 / 重试</button><button class="secondary" data-detail="${esc(j.id)}">查看详情</button>` : '<span class="small muted">后台处理中</span>'}</div></td></tr>`).join("") : '<tr><td colspan="5" class="empty">该机器人类型暂无合并任务。提交后可在此查看进度和结果。</td></tr>';
 }
 $("merge-job-list").addEventListener("click", (event) => {
   const id = event.target.closest("[data-merge-retry]")?.dataset.mergeRetry;

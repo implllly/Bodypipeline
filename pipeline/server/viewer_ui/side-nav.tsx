@@ -37,7 +37,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onEpisodeSelect,
 }) => {
   const [mobileVisible, setMobileVisible] = useState(false);
-  const { flagged, count, toggle } = useFlaggedEpisodes();
+  const { flagged, count, toggle, remap, storageError } = useFlaggedEpisodes();
   const { result: scores, retry: retryScores } = useEpisodeScores(datasetInfo.repoId);
   const scoreByEpisode = useMemo(() => new Map(scores.report?.episodes.map(row => [row.episode_index, row]) || []), [scores.report]);
   const [recycle, setRecycle] = useState<{entries: {episode: number}[]; revision: number; total_episodes: number; operation?: {id: string; state: string; mapping?: Record<string, number>}} | null>(null);
@@ -57,8 +57,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           if (operation?.state === "completed") {
             const key = `recycle-generation:${datasetInfo.repoId}`;
             if (sessionStorage.getItem(key) !== operation.id) {
-              const previous: number[] = JSON.parse(sessionStorage.getItem("flagged-episodes") || "[]");
-              sessionStorage.setItem("flagged-episodes", JSON.stringify(previous.filter(i => operation.mapping?.[i] !== undefined).map(i => operation.mapping[i])));
+              remap(operation.mapping || {}, operation.id);
               sessionStorage.setItem(key, operation.id);
               window.location.reload();
               return;
@@ -72,7 +71,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     const timer = setInterval(load, 5000);
     window.addEventListener("focus", load);
     return () => { active = false; clearInterval(timer); window.removeEventListener("focus", load); };
-  }, [api, datasetInfo.repoId]);
+  }, [api, datasetInfo.repoId, remap]);
   const trashed = useMemo(() => new Set(recycle?.entries.map(e => e.episode) || []), [recycle]);
   const cleaning = ["pending", "running"].includes(recycle?.operation?.state || "");
   async function changeEpisode(episode: number, action: "trash" | "restore") {
@@ -127,6 +126,9 @@ const Sidebar: React.FC<SidebarProps> = ({
         </dl>
 
         <EpisodeScorePanel result={scores} episodeId={episodeId} retry={retryScores} />
+
+        <a href={`/${datasetInfo.repoId}/batch`} className="pipeline-batch-link"><span aria-hidden="true">▦</span> 批量视频预览</a>
+        {storageError && <p role="alert" className="pipeline-recycle-notice">{storageError}</p>}
 
         <a href={`/${datasetInfo.repoId}/trash`} className="pipeline-recycle-link"><TrashIcon /> 回收站 <span>{recycle?.entries.length ?? "…"}</span></a>
         {notice && <div role="status" className="pipeline-recycle-notice">{notice} {undo !== null && <button disabled={busy || cleaning} onClick={() => changeEpisode(undo, "restore")}>撤销</button>}</div>}
