@@ -48,7 +48,9 @@ const names = {
   STOPPING: "正在停止",
   RECOVERY_REQUIRED: "待恢复",
   REVIEW: "待确认保留",
-  SEALING: "HDF5 打包中",
+  SEALING: "待校验 / 封存中",
+  PAUSED: "已暂停",
+  SAVING: "保存中",
   SEALED: "已封存",
   DISCARDED: "已丢弃",
   QUEUED: "等待处理",
@@ -361,7 +363,7 @@ async function refreshClientHealth() {
   } finally {
     if (config?.role === "client") {
       renderClientCaptures();
-      healthTimer = setTimeout(refreshClientHealth, 10000);
+      healthTimer = setTimeout(refreshClientHealth, config.capture_capabilities?.external_trigger ? 2000 : 10000);
     }
   }
 }
@@ -377,7 +379,7 @@ function acceptCaptures(rows) {
 function currentCapture() {
   return (
     captures.find((c) =>
-      ["STARTING", "RECORDING", "STOPPING", "RECOVERY_REQUIRED"].includes(c.state),
+      ["STARTING", "RECORDING", "STOPPING", "RECOVERY_REQUIRED", "PAUSED", "SAVING"].includes(c.state),
     ) ||
     captures.find((c) => c.state === "REVIEW" && sessionCaptures.has(c.id))
   );
@@ -425,6 +427,7 @@ function captureBadge(c) {
     : badge(c.state);
 }
 function controls(c) {
+  if (c.external_trigger) return '<span class="small muted">手柄控制 · 自动保留正常保存的数据</span>';
   const buttons = [];
   if (["RECORDING", "RECOVERY_REQUIRED"].includes(c.state))
     buttons.push(
@@ -463,6 +466,14 @@ $("capture-form").onsubmit = (e) => {
     };
     $("start-button").disabled = true;
     notice("正在请求开始采集，等待机器人确认…");
+    if (config.capture_capabilities?.external_trigger) {
+      const batch = await api("/api/capture-batches", "POST", { ...data, instruction: data.dataset_name });
+      requestKey = null;
+      await refreshClientHealth();
+      if (batch.state !== "ACTIVE") throw Error(batch.error || "作业状态待核实，勿重复启动");
+      notice("采集作业已就绪：请使用手柄开始、结束或丢弃。后台校验和上传已暂停；本操作不会启动机器人控制器。");
+      return;
+    }
     const c = await api("/api/captures/start", "POST", data);
     acceptCaptures([c]);
     sessionCaptures.add(c.id);
@@ -473,6 +484,14 @@ $("capture-form").onsubmit = (e) => {
   });
 };
 document.addEventListener("click", (e) => {
+  const endBatch = e.target.closest("[data-end-batch]");
+  if (endBatch) action(async () => {
+    if (!confirm("确认结束本批次采集？请先用手柄保存当前段。本操作仅退出 raw 采集器，不停止机器人控制器。")) return;
+    const result = await api(`/api/capture-batches/${endBatch.dataset.endBatch}/end`, "POST");
+    await refreshClientHealth();
+    if (result.state !== "ENDED") throw Error(result.error || "采集器退出尚未确认，上传仍暂停");
+    notice("本批次采集结束，资源空闲后自动校验与上传。");
+  });
   const copy = e.target.closest("[data-copy-path]");
   if (copy) {
     copyText(copy.dataset.copyPath).then((copied) =>
@@ -606,13 +625,13 @@ function renderClientCaptures() {
   const rows = captures;
   renderClientDatasets();
   const active = rows.find((c) =>
-    ["STARTING", "RECORDING", "STOPPING", "RECOVERY_REQUIRED"].includes(
+    ["STARTING", "RECORDING", "STOPPING", "RECOVERY_REQUIRED", "PAUSED", "SAVING"].includes(
       c.state,
     ),
   );
   for (const row of rows)
     if (
-      ["STARTING", "RECORDING", "STOPPING", "RECOVERY_REQUIRED"].includes(
+      ["STARTING", "RECORDING", "STOPPING", "RECOVERY_REQUIRED", "PAUSED", "SAVING"].includes(
         row.state,
       )
     )
@@ -623,14 +642,25 @@ function renderClientCaptures() {
   const current =
     active ||
     rows.find((c) => c.state === "REVIEW" && sessionCaptures.has(c.id));
-  $("start-button").disabled = !!active || busy;
+  const external = !!config?.capture_capabilities?.external_trigger;
+  const batch = clientHealth?.batch;
+  $("start-button").disabled = !!active || busy || (external && (!clientHealth || !!batch));
+  $("start-button").textContent = external ? "进入手柄采集作业" : "● 采集下一个 episode";
+  $("external-batch-actions").hidden = !external;
+  $("external-batch-actions").innerHTML = external && batch
+    ? `<p class="small">作业 ${esc(batch.state)} · ${esc(batch.adapter_status?.state || "等待手柄")} · ${batch.episode_count || 0} 段</p>${batch.error ? `<p class="error">${esc(batch.error)}</p>` : ""}<button class="secondary" type="button" data-end-batch="${esc(batch.id)}" ${busy ? "disabled" : ""}>结束本批次采集</button>`
+    : external ? '<p class="small muted">进入作业后使用遥操手柄；正常保存自动入队，丢弃不上传。机器人控制由现场单独启动。</p>' : "";
+  const transfer = clientHealth?.background_transfer;
+  const pendingBytes = rows.filter(c => c.upload_state !== "ACKED" && c.state !== "DISCARDED").reduce((n, c) => n + (c.total_bytes || 0), 0);
+  $("background-transfer-status").textContent = transfer?.enabled
+    ? `待处理 ${bytes(pendingBytes)} · ${transfer.allowed ? "资源空闲，后台处理可运行" : transfer.reason}` : "";
   $("health-label").textContent = active
     ? "● " + (names[active.state] || active.state)
     : clientHealth?.ready
       ? "● 采集适配器就绪"
       : clientHealth ? "○ 适配器尚未就绪" : "○ 健康检查待更新";
   $("capture-state").textContent = !current
-    ? "就绪"
+    ? (external && batch ? (names[batch.adapter_status?.state] || "作业就绪 · 等待手柄") : "就绪")
     : current.capture_failed
       ? "采集失败，只能丢弃"
       : names[current.state];
@@ -647,7 +677,7 @@ function renderClientCaptures() {
                 Math.round((100 * (c.uploaded_bytes || 0)) / c.total_bytes),
               )
             : 0;
-          return `<tr><td><strong class="task-name">${esc(c.dataset_name || c.instruction)}</strong><span class="sub">${esc(c.id.slice(0, 8))} · ${new Date(c.created_at * 1000).toLocaleString("zh-CN")}</span>${c.error ? `<span class="sub job-error">${esc(c.error)}</span>` : ""}</td><td>${captureBadge(c)}</td><td>${esc(c.remote_target)}<span class="sub">${esc(c.remote_prefix || "/")}</span></td><td>${badge(c.upload_state)} ${c.total_bytes ? `<span class="small">${percent}% · ${bytes(c.total_bytes)}</span><div class="progress"><span data-width="${percent}"></span></div>` : ""}${c.upload_error ? `<span class="sub job-error">${esc(c.upload_error)}</span>` : ""}</td><td>${controls(c)}</td></tr>`;
+          return `<tr><td><strong class="task-name">${esc(c.dataset_name || c.instruction)}</strong><span class="sub">${esc(c.id.slice(0, 8))} · ${new Date(c.created_at * 1000).toLocaleString("zh-CN")}</span>${c.error ? `<span class="sub job-error">${esc(c.error)}</span>` : ""}</td><td>${captureBadge(c)}</td><td>${esc(c.remote_target)}<span class="sub">${esc(c.remote_prefix || "/")}</span></td><td>${badge(c.upload_state)} ${c.total_bytes ? `<span class="small">${percent}% · ${bytes(c.total_bytes)}</span><div class="progress"><span data-width="${percent}"></span></div>` : ""}${c.background_wait ? `<span class="sub">${esc(c.background_wait)}</span>` : ""}${c.upload_error ? `<span class="sub job-error">${esc(c.upload_error)}</span>` : ""}</td><td>${controls(c)}</td></tr>`;
         })
         .join("")
     : '<tr><td colspan="5" class="empty">还没有采集记录。填写任务描述，开始第一段示教。</td></tr>';

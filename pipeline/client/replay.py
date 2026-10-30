@@ -147,6 +147,14 @@ class ReplayService:
         return result
 
     def start(self, root, path, request_id):
+        # Share the lifecycle lock, but never hold capture.lock while draining
+        # background workers (their progress updates need that lock).
+        with self.capture.batch_lock:
+            if self.capture.current_batch():
+                raise DomainError("请先结束当前采集作业")
+            return self._start(root, path, request_id)
+
+    def _start(self, root, path, request_id):
         from .service import BUSY
 
         with self.lock:

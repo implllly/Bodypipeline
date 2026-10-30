@@ -1,0 +1,43 @@
+{
+  "root": "/home/unitree/.bodypipeline/g1-client",
+  "mode": "external",
+  "robot_id": "g1-001",
+  "project_id": "teleop",
+  "server_url": "http://SERVER_ADDRESS:8081",
+  "local_roots": {"default": "/workspace/unitree/bodypipeline-captures"},
+  "profiles": {
+    "g1_sonic11_brainco": {
+      "profile_path": "configs/g1-sonic11-brainco-v1.json",
+      "provider": "g1_sonic",
+      "raw_formats": ["g1_sonic_raw_v1"]
+    }
+  },
+  "default_profile": "g1_sonic11_brainco",
+  "capture": {
+    "adapter": "g1_sonic",
+    "repository": "/workspace/unitree/GR00T-WholeBodyControl",
+    "python": "/workspace/unitree/GR00T-WholeBodyControl/.venv_data_collection/bin/python",
+    "raw_buffer_mb": 64,
+    "preview_zmq": false
+  },
+  "background_transfer": {
+    "enabled": true,
+    "idle_seconds": 20,
+    "sample_seconds": 1,
+    "chunk_bytes": 1048576,
+    "rate_bytes_per_second": 5000000,
+    "memory_pause_ratio": 0.15,
+    "memory_resume_ratio": 0.20,
+    "io_pressure_pause": 20,
+    "io_pressure_resume": 5,
+    "memory_pressure_pause": 5,
+    "memory_pressure_resume": 1,
+    "cpu_pause_percent": 85,
+    "cpu_resume_percent": 70,
+    "core_pause_percent": 98,
+    "network_pause_bytes_per_second": 20000000,
+    "network_resume_bytes_per_second": 10000000,
+    "disk_pause_bytes_per_second": 100000000,
+    "disk_resume_bytes_per_second": 50000000
+  }
+}

@@ -136,6 +136,8 @@ class Settings:
     devices: list[dict] = field(default_factory=list)
     accepted_capture_profile_hashes: list[str] = field(default_factory=list)
     replay: dict = field(default_factory=dict)
+    capture: dict = field(default_factory=dict)
+    background_transfer: dict = field(default_factory=dict)
 
     def __post_init__(self):
         # A price table is written by hand in server.json. Validate it once,
@@ -172,7 +174,11 @@ class Settings:
             )
         if settings.token == settings.device_token:
             raise ValueError("用户密钥与设备密钥必须不同")
-        if settings.mode not in {"mock", "ros2"} or settings.processing_mode not in {
+        if settings.mode not in {
+            "mock",
+            "ros2",
+            "external",
+        } or settings.processing_mode not in {
             "demo",
             "real",
         }:
@@ -189,8 +195,7 @@ class Settings:
         if not 65536 <= settings.chunk_bytes <= 16 * 1024**2:
             raise ValueError("chunk_bytes 应在 64 KiB 到 16 MiB 之间")
         if not isinstance(settings.argus_models, list) or not all(
-            isinstance(value, str) and value.strip()
-            for value in settings.argus_models
+            isinstance(value, str) and value.strip() for value in settings.argus_models
         ):
             raise ValueError("argus_models 必须是模型标识符列表")
         settings.argus_prices = validate_argus_prices(settings.argus_prices)

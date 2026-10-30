@@ -64,8 +64,9 @@ def create_app(settings, background=True):
 
     async def health_loop():
         while not stopping.is_set():
+            await asyncio.to_thread(service.sync_external)
             for row in service.store.all("capture"):
-                if row["state"] == "RECORDING":
+                if row["state"] == "RECORDING" and not row.get("external_trigger"):
                     import shutil
 
                     status = await asyncio.to_thread(service.health)
@@ -102,6 +103,7 @@ def create_app(settings, background=True):
             yield
         finally:
             stopping.set()
+            service.background.stop.set()
             if tasks:
                 await asyncio.gather(*tasks)
             await asyncio.to_thread(replay.close)
@@ -150,6 +152,7 @@ def create_app(settings, background=True):
             "mode": settings.mode,
             "robot_id": settings.robot_id,
             "profile": service.profile,
+            "capture_capabilities": service.capabilities,
             "local_roots": [
                 {"id": k, "path": str(v)} for k, v in service.roots.items()
             ],
@@ -158,7 +161,29 @@ def create_app(settings, background=True):
 
     @app.get("/api/health")
     def health():
-        return service.health()
+        return {
+            **service.health(),
+            "background_transfer": service.background.status(),
+            "batch": service.current_batch(),
+        }
+
+    @app.get("/api/capture-batches")
+    def batches():
+        return service.store.all("batch")
+
+    @app.post("/api/capture-batches", status_code=201)
+    def begin_batch(body: CaptureRequest):
+        data = body.model_dump(exclude_none=True)
+        data["instruction"] = data["instruction"].strip() or data.get(
+            "dataset_name", ""
+        )
+        if not data["instruction"]:
+            raise DomainError("请填写本批次任务描述", 400)
+        return service.begin_batch(data)
+
+    @app.post("/api/capture-batches/{bid}/end")
+    def end_batch(bid: str):
+        return service.end_batch(bid)
 
     @app.get("/api/targets")
     def targets():
@@ -247,7 +272,7 @@ def create_app(settings, background=True):
         content = service.adapter.frame(camera_id)
         if not content:
             raise DomainError("暂未收到相机图像", 503)
-        if preview == "low":
+        if preview == "low" and not service.capabilities.get("preview_passthrough"):
             # Preview only; recorded images remain at their original resolution.
             with Image.open(io.BytesIO(content)) as image:
                 image.thumbnail((320, 320))

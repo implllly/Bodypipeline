@@ -14,6 +14,8 @@ BodyPipeline 在机器人端提供 Web 数采工作台，在服务器端统一�
 
 回放采用独立的 [ReplayProvider 多机器人适配层](docs/robots/replay-adaptation.md)，与采集 Adapter、Server 转换 Provider 分工；当前真实实现为 AgileX ALOHA，其他机器人需接入对应执行接口。
 
+Unitree G1（SONIC 1.1 / BrainCo）新增独立 raw subscriber 的 Client 适配：手柄 episode 自动同步、raw 原样封存、整批次采集优先的资源门控与断点上传。配置、限制和待现场验收项见 [G1 Client 使用说明](docs/robots/g1-client.md)；此适配不启动机器人控制服务，也不包含 G1 动作回放。
+
 数据回放统一位于 Client 工作台侧栏（`/#replay`），与采集共用登录和页面布局，直接操作当前机器人。Server 仅负责接收、转换、质检与预览，不再提供回放转发接口。
 
 | 能力 | 说明 |
