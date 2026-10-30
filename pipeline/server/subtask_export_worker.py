@@ -217,7 +217,9 @@ def _write_subtasks(path: Path, vocabulary: list[dict], unannotated: int, text: 
 
         pq.write_table(pa.Table.from_pylist(rows), path, compression="snappy")
         return
-    frame = pd.DataFrame(rows, columns=["subtask", "subtask_index"]).set_index("subtask")
+    frame = pd.DataFrame(rows, columns=["subtask", "subtask_index"]).set_index(
+        "subtask"
+    )
     frame.to_parquet(path, engine="pyarrow", compression="snappy")
 
 
@@ -291,9 +293,38 @@ def patch(destination: Path, spec: dict) -> dict:
     # Lossless manual annotations (including arbitrary VQA/tool arguments).
     # Keep the original language columns untouched; this sidecar is authoritative
     # for reviewed episodes and travels with the independent dataset copy.
-    manual = {str(item["episode_index"]): item["atoms"] for item in spec["episodes"] if "atoms" in item}
+    manual = {
+        str(item["episode_index"]): item["atoms"]
+        for item in spec["episodes"]
+        if "atoms" in item
+    }
     if manual:
-        _write_json(destination / "meta/bodypipeline-manual-annotations.json", {"version": 1, "episodes": manual})
+        _write_json(
+            destination / "meta/bodypipeline-manual-annotations.json",
+            {"version": 1, "episodes": manual},
+        )
+    tasks = {
+        str(item["episode_index"]): item["task_document"]
+        for item in spec["episodes"]
+        if "task_document" in item
+    }
+    if tasks:
+        _write_json(
+            destination / "meta/bodypipeline-task-annotations.json",
+            {"version": 1, "episodes": tasks},
+        )
+    else:
+        # A fresh AI export is an independent candidate. A copied human-review
+        # sidecar describes the old labels; keep it as an archive, not as the
+        # candidate's active document. The source itself is never changed.
+        previous = destination / "meta/bodypipeline-task-annotations.json"
+        if previous.is_file():
+            os.replace(
+                previous,
+                previous.with_name(
+                    f"bodypipeline-task-annotations-source-{uuid.uuid4().hex}.json"
+                ),
+            )
 
     _write_subtasks(
         destination / "meta/subtasks.parquet",

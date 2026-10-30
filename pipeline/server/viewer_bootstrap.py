@@ -201,6 +201,10 @@ def patch_presentation(cache: Path):
         )
         versions.write_text(text)
 
+    from pipeline.server.viewer_task_annotations import patch_task_annotations
+
+    patch_task_annotations(cache)
+
 
 def patch_score_filter(cache: Path):
     """Extend the existing filtering tab without replacing upstream filters."""
@@ -242,6 +246,7 @@ def _fingerprint(cache: Path, data_origin: str) -> str:
                     + THEME_SCRIPT.read_bytes()
                     + Path(__file__).read_bytes()
                     + Path(__file__).with_name("viewer_annotations.py").read_bytes()
+                    + Path(__file__).with_name("viewer_task_annotations.py").read_bytes()
                     + b"".join(
                         path.name.encode() + path.read_bytes()
                         for path in sorted(UI_ASSETS.iterdir())

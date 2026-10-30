@@ -653,6 +653,7 @@ class SubtaskExportRunner:
                                 "frames": item["frames"],
                                 "segments": item["segments"],
                                 **({"atoms": item["atoms"]} if "atoms" in item else {}),
+                                **({"task_document": item["task_document"]} if "task_document" in item else {}),
                             }
                             for item in plan["episodes"]
                         ],

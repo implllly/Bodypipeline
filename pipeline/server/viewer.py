@@ -31,6 +31,7 @@ from .datasets import dataset_for_job
 from .episode_scores import EpisodeScoreCache
 from .recycle import RecycleBin
 from .subtask_review import DraftRequest, RevisionExportRequest
+from .task_annotations import TemplateRequest
 from .viewer_data import PreviewRegistry, serve_dataset_file
 
 SERVICE_KEY = "service"
@@ -461,7 +462,10 @@ def create_gateway(settings):
         # Only server-owned preview identities are accepted, never a local_path
         # or arbitrary proxy destination. The Server alone writes draft state.
         score_preview(dataset_id)
-        url = settings.server_url.rstrip("/") + f"/api/subtask-review/{dataset_id}/{suffix}"
+        return await annotation_proxy(f"/api/subtask-review/{dataset_id}/{suffix}", body)
+
+    async def annotation_proxy(route, body=None):
+        url = settings.server_url.rstrip("/") + route
         try:
             async with httpx.AsyncClient(trust_env=False) as client:
                 response = await client.request(
@@ -477,6 +481,14 @@ def create_gateway(settings):
         except ValueError as exc:
             raise DomainError("Server 标注服务返回无效响应", 502) from exc
         return JSONResponse(payload, status_code=response.status_code, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/task-templates")
+    async def task_templates():
+        return await annotation_proxy("/api/task-templates")
+
+    @app.post("/api/task-templates")
+    async def save_task_templates(body: TemplateRequest):
+        return await annotation_proxy("/api/task-templates", body)
 
     @app.get("/api/subtask-review/{dataset_id}/episodes/{episode}")
     async def review_episode(dataset_id: str, episode: int):

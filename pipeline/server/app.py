@@ -30,6 +30,7 @@ from .providers import RuntimeCatalog
 from .quality import robot_profile_blockers
 from .storage import storage_path
 from .subtask_review import DraftRequest, RevisionExportRequest, SubtaskReview
+from .task_annotations import TemplateLibrary, TemplateRequest
 from .viewer import ViewerManager
 
 
@@ -527,6 +528,14 @@ def create_app(settings, background=True):
     def analysis_budget(aid: str):
         row = ingest.store.get("analysis", aid)
         return analyses.budget(row["job_id"], row["episode_count"], "full")
+
+    @app.get("/api/task-templates")
+    def task_templates():
+        return TemplateLibrary(ingest.store).read()
+
+    @app.post("/api/task-templates")
+    def save_task_templates(body: TemplateRequest):
+        return TemplateLibrary(ingest.store).save(body)
 
     @app.get("/api/subtask-review/{dataset_id}/episodes/{episode}")
     def review_episode(dataset_id: str, episode: int):

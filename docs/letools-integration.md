@@ -288,10 +288,41 @@ bash scripts/install_visualizer_zh_patch.sh
 - 这是展示层补丁，不改变 Doctor 检查项、数据读取、转换或任何质量判定；
 - 上游业务逻辑与组件结构不变，升级 letools 时需要重新核对补丁是否仍能干净应用；
 - 报告中 Doctor 的逐条明细仍保留英文原文，便于与上游工具对照；
-- `--no-annotations` 仍然生效，标注页只做本地会话内编辑，不写回数据集；
+- `--no-annotations` 仍然生效。对 Server 登记的 `bp/<preview-id>` 数据集，任务模板标注与语言 / VQA 共用服务端草稿和版本号，保存不改来源数据集；普通 Hub / 本地独立预览仍保留浏览器编辑模式；
 - Doctor 标签页里的报告由 letools 以硬编码深色样式渲染，因此宿主在
   `pipeline/server/viewer.py` 的 Viewer Gateway 中给 `/_data/doctor` 注入共享主题，
   不 fork 固定版本工具链。该路由只在 Viewer 进程内生效，改动后需重启 `bodypipeline-viewer`。
+
+任务标注时，视频与播放条固定在标注区上方，向下编辑字段时仍可查看画面。时间轴的普通点击和拖动只定位视频；按住 **Shift** 在空白轨道拖动新建片段，在已有片段上拖动移动片段，在左右边缘拖动调整边界。片段边界吸附源帧，视频预览按鼠标所在的实际时间定位；点击片段不会强制跳回其起点。
+
+右键时间轴片段或左侧记录可删除这条标注，右下角提供撤销。`NULL · 无任务片段` 表示已经确认没有任务内容，和仍未标注的空白区分保存。服务端模式每帧只允许一个 Subtask，Subtask / NULL 片段之间不能重叠。
+
+### 3.7 AI 初标、人工修订与服务端保存
+
+管理台现有 AI 标注流程生成 Subtask 数据集后，在 Viewer 打开其预览。新时间轴直接加载该数据集的 AI / 来源片段；同名的多次尝试各自保留 ID、边界和评分。新工作区负责 Subtask / NULL、Episode 评价和单帧字段；下方的「更多标注：语言、计划与 VQA」继续编辑非 Subtask 内容，共用一次保存和一次导出。
+
+- **保存到服务器**：`POST /api/subtask-review/<dataset-id>/episodes/<episode>` 同时保存 `segments`、完整 `task_document` 和手动 / VQA `atoms`。草稿位于 Server `state/subtask_draft/`，每次保存先写 `state/subtask_draft_history/` 历史，再发布新版本。另一窗口已保存或来源变化时返回 409，不覆盖旧版本。
+- **共用任务模板**：`GET/POST /api/task-templates` 通过同源 Viewer Gateway 访问服务端模板库，保存需要模板库 `revision`。已保存 Episode 的模板快照和填写结果随草稿保留；重新打开时在页面应用共用模板的最新字段，核对后再保存。改变已填写字段的类型或作用范围时，旧值以「历史字段」保留。新 Episode 沿用数据集最近绑定的模板，同类数据集也可选择同一模板。
+- **浏览器恢复**：未保存的完整工作区以 sessionStorage 做本窗口备份，返回 Episode 时可恢复；它不是已保存服务器的替代。旧版 localStorage 记录通过「导入浏览器旧标注」显式载入，核对后再保存，不自动覆盖 AI / 服务端草稿，原记录保留。
+- **导出修订数据集**：先保存当前修改，再使用原有修订导出队列生成独立 v3.0 副本。每帧 `subtask_index` 和 `meta/subtasks.parquet` 表达最终 Subtask；`meta/bodypipeline-task-annotations.json` 无损保存模板、各作用范围的自定义值、尝试 ID、NULL 和单帧备注。NULL 与未标注空白在逐帧标签中均为 -1，通过该 sidecar 区分；相邻同名尝试也通过 sidecar 保持独立。语言 / VQA 仍通过 `meta/bodypipeline-manual-annotations.json` 保存。
+- **重新打开**：修订副本的预览同时读取逐帧标签与任务 sidecar，核对语义覆盖一致后恢复新界面。后续人工修改不会影响已排队导出的快照。重新运行 AI 仍生成独立候选数据集；如果复制的旧任务 sidecar 已不适用于新标签，会作为 `meta/bodypipeline-task-annotations-source-*.json` 归档，不作为候选结果的当前标注。
+
+这些字段通过 sidecar 随修订数据集交付，尚未将星级、备注等自定义字段展开成训练 Parquet 列。永久清理导致来源签名或 Episode 编号变化时，旧服务端草稿拒绝自动套用，需要重新核对。
+
+### 3.8 本机 Mock 标注预览
+
+已有 Python 基础环境、固定版本 letools、Node.js、Bun 和 FFmpeg 时，可准备一份独立的 Viewer 缓存并启动本机演示：
+
+```bash
+.runtime/letools-venv/bin/letools visualizer setup --cache-dir .runtime/annotation-preview/viewer
+uv run --with pyarrow python scripts/preview_annotations.py
+```
+
+脚本会应用本仓库的 Viewer 补丁，生成两条含三路合成视频的 LeRobot v2.1 数据，并启动 Mock Client（18080）、Server（18081）和 Viewer（18082，内部 UI 13100）。这些服务只监听 `127.0.0.1`，运行数据及配置位于 `.runtime/annotation-preview/`。打开 `http://127.0.0.1:18082/annotation-demo.html`，演示登录密码为 `annotation-demo`，按 Ctrl+C 停止本次服务。
+
+脚本首次启动会通过真实保存接口在演示 Server 中建立示例模板、重试片段和评价；已有服务端草稿不会被覆盖。演示入口保留旧浏览器示例，便于手动验证旧记录导入。可用 `--viewer-source <独立缓存>/source` 选择其他固定版本的演示源码缓存；该缓存会被应用界面补丁并采用本机字体，不要指向正在使用的生产 Viewer 缓存。
+
+预览需要可用的 LeTools Python 环境读取源数据并执行修订导出，使用合成数据，不会调用付费 AI 或连接机器人。浏览器新窗口打开后可以读取已保存的 Server 草稿。
 
 ## 4. 与上游协作
 

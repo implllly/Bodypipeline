@@ -51,6 +51,7 @@ artifacts/
 
 # Frontend dependencies and local editor/OS files
 node_modules/
+.playwright-cli/
 .DS_Store
 .idea/
 .vscode/
