@@ -10,6 +10,7 @@ def patch_batch_preview(cache: Path):
     destinations = {
         "batch-preview.tsx": "src/components/batch-preview.tsx",
         "batch-preview-model.ts": "src/utils/batch-preview-model.ts",
+        "review-flags-store.ts": "src/utils/review-flags-store.ts",
         "batch-preview-data.ts": "src/utils/batch-preview-data.ts",
         "batch-preview.css": "src/app/batch-preview.css",
         "review-flags-context.tsx": "src/context/flagged-episodes-context.tsx",

@@ -8,11 +8,7 @@ import React, {
   useMemo,
   useEffect,
 } from "react";
-import {
-  flagStorageKey,
-  readFlags,
-  remapFlags,
-} from "@/utils/batch-preview-model";
+import { ReviewFlagStore, type CleanupState } from "@/utils/review-flags-store";
 
 type Flags = {
   flagged: Set<number>;
@@ -22,7 +18,8 @@ type Flags = {
   addMany: (ids: number[]) => void;
   clear: () => void;
   storageError: string;
-  remap: (mapping: Record<string, number>, operationId: string) => void;
+  remap: (cleanup: CleanupState) => boolean;
+  canReload: () => boolean;
 };
 const Context = createContext<Flags | undefined>(undefined);
 export function useFlaggedEpisodes() {
@@ -38,80 +35,63 @@ function DatasetFlags({
   repoId: string;
   children: React.ReactNode;
 }) {
-  const key = flagStorageKey(repoId);
-  const [flagged, setFlags] = useState<Set<number>>(new Set());
-  const [storageError, setStorageError] = useState("");
+  const [, render] = useState(0);
   const [ready, setReady] = useState(false);
+  const store = useMemo(
+    () =>
+      new ReviewFlagStore(
+        {
+          getItem: (key) => localStorage.getItem(key),
+          setItem: (key, value) => localStorage.setItem(key, value),
+        },
+        repoId,
+        () => render((n) => n + 1),
+      ),
+    [repoId],
+  );
   useEffect(() => {
-    try {
-      setFlags(readFlags(localStorage.getItem(key)));
-    } catch {
-      setStorageError("浏览器存储不可用，待检查标记仅在本页保留");
-    }
+    store.refresh();
     setReady(true);
     const update = (event: StorageEvent) => {
-      if (event.key === key) setFlags(readFlags(event.newValue));
+      // Read the latest record, not a queued event's potentially stale payload.
+      if (event.key === store.key || event.key === null) store.refresh();
     };
     window.addEventListener("storage", update);
     return () => window.removeEventListener("storage", update);
-  }, [key]);
-  const change = useCallback(
-    (transform: (previous: Set<number>) => Set<number>) => {
-      // Read latest persisted flags so another open tab's marks are preserved.
-      let next: Set<number>;
-      try {
-        next = transform(readFlags(localStorage.getItem(key)));
-        localStorage.setItem(key, JSON.stringify([...next]));
-        setFlags(next);
-        setStorageError("");
-      } catch {
-        setFlags((previous) => transform(previous));
-        setStorageError("浏览器存储不可用，待检查标记仅在本页保留");
-      }
-    },
-    [key],
-  );
+  }, [store]);
   const toggle = useCallback(
     (id: number) =>
-      change((previous) => {
+      store.change((previous) => {
         const next = new Set(previous);
         if (next.has(id)) next.delete(id);
         else next.add(id);
         return next;
       }),
-    [change],
+    [store],
   );
   const addMany = useCallback(
-    (ids: number[]) => change((previous) => new Set([...previous, ...ids])),
-    [change],
+    (ids: number[]) =>
+      store.change((previous) => new Set([...previous, ...ids])),
+    [store],
   );
-  const clear = useCallback(() => change(() => new Set()), [change]);
+  const clear = useCallback(() => store.change(() => new Set(), true), [store]);
   const remap = useCallback(
-    (mapping: Record<string, number>, operationId: string) => {
-      const marker = `${key}:cleanup`;
-      try {
-        if (localStorage.getItem(marker) === operationId) return;
-        change((previous) => remapFlags(previous, mapping));
-        localStorage.setItem(marker, operationId);
-      } catch {
-        setStorageError("清理后的待检查编号未能保存，请刷新检查");
-      }
-    },
-    [key, change],
+    (cleanup: CleanupState) => store.sync(cleanup),
+    [store],
   );
-  const value = useMemo(
-    () => ({
-      flagged,
-      count: flagged.size,
-      has: (id: number) => flagged.has(id),
-      toggle,
-      addMany,
-      clear,
-      storageError,
-      remap,
-    }),
-    [flagged, toggle, addMany, clear, storageError, remap],
-  );
+  const canReload = useCallback(() => store.persisted, [store]);
+  const flagged = store.flags;
+  const value = {
+    flagged,
+    count: flagged.size,
+    has: (id: number) => flagged.has(id),
+    toggle,
+    addMany,
+    clear,
+    storageError: store.error,
+    remap,
+    canReload,
+  };
   return (
     <Context.Provider value={value}>{ready ? children : null}</Context.Provider>
   );

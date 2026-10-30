@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from pipeline.server.recycle import RecycleBin
+from pipeline.server.recycle import RecycleBin, record_cleanup
 from pipeline.server.viewer import create_gateway
 from pipeline.server.viewer_data import PreviewRegistry
 from pipeline.shared.core import DomainError, Store
@@ -121,3 +121,93 @@ def test_real_shared_shard_cleanup(letools_binary):
     )
     assert result.returncode == 0, result.stderr
     assert "crash recovery passed" in result.stdout
+
+
+def test_cleanup_history_is_ordered_bounded_and_idempotent():
+    row = {}
+    for index in range(35):
+        row["operation"] = {
+            "id": str(index),
+            "state": "completed",
+            "mapping": {"1": 0},
+        }
+        assert record_cleanup(row)
+        assert not record_cleanup(row)
+    assert row["cleanup_generation"] == 35
+    assert len(row["cleanup_history"]) == 32
+    assert row["cleanup_history"][0]["from"] == 3
+    assert row["cleanup_history"][-1] == {
+        "id": "34",
+        "from": 34,
+        "to": 35,
+        "mapping": {"1": 0},
+    }
+    row["operation"] = {"id": "failed", "state": "failed"}
+    assert not record_cleanup(row)
+    assert row["cleanup_generation"] == 35
+
+
+def test_cleanup_status_migrates_legacy_completed_operation(settings_factory, tmp_path):
+    _, store, _, recycle = setup_bin(settings_factory, tmp_path)
+    key, path = recycle.resolve("bp/example")
+    row = recycle._load(key, path)
+    row["operation"] = {
+        "id": "legacy",
+        "state": "completed",
+        "mapping": {"1": 0, "2": 1},
+    }
+    store.put("recycle", key, row)
+    result = recycle.status("bp/example")
+    assert result["cleanup_generation"] == 1
+    assert result["cleanup_history"] == [
+        {
+            "id": "legacy",
+            "from": 0,
+            "to": 1,
+            "mapping": {"1": 0, "2": 1},
+        }
+    ]
+    assert recycle.status("bp/alias")["cleanup_history"] == result["cleanup_history"]
+    assert store.get("recycle", key)["cleanup_generation"] == 1
+
+
+def test_cleanup_recovery_records_each_mapping_once(settings_factory, tmp_path):
+    from pipeline.server.recycle_worker import MARKER, recover_operation
+
+    _, store, _, recycle = setup_bin(settings_factory, tmp_path)
+    key, path = recycle.resolve("bp/example")
+    row = recycle._load(key, path)
+    for operation in ("first", "second"):
+        row["operation"] = {
+            "id": operation,
+            "state": "running",
+            "entries_before": {},
+        }
+        (path / MARKER).write_text(
+            json.dumps(
+                {
+                    "operation": operation,
+                    "mapping": {"1": 0, "2": 1},
+                    "total_episodes": 2,
+                    "deleted_frames": 6,
+                }
+            )
+        )
+        recover_operation(store, row)
+        recover_operation(store, row)
+    assert row["cleanup_generation"] == 2
+    assert [item["id"] for item in row["cleanup_history"]] == ["first", "second"]
+
+
+def test_legacy_replaced_dataset_without_completed_operation_is_not_original(
+    settings_factory, tmp_path
+):
+    _, _, _, recycle = setup_bin(settings_factory, tmp_path)
+    _, path = recycle.resolve("bp/example")
+    info_path = path / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["bodypipeline_revision"] = "old-cleanup"
+    info_path.write_text(json.dumps(info))
+    result = recycle.status("bp/example")
+    assert result["cleanup_generation"] == 1
+    assert result["cleanup_history"] == []

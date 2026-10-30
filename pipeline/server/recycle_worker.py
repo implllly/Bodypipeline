@@ -72,6 +72,9 @@ def recover_operation(store, row):
             error=op.get("error") or "清理进程中断，可重试",
             finished_at=time.time(),
         )
+    from .recycle import record_cleanup
+
+    record_cleanup(row)
     row["revision"] += 1
     store.put("recycle", row["id"], row)
     return row

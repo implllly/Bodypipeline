@@ -18,6 +18,29 @@ from pipeline.shared.core import DomainError, Store, confined, executable_path
 from .datasets import _dataset_roots
 
 
+def record_cleanup(row):
+    """Journal completed renumberings once, including pre-journal deployments."""
+    op = row.get("operation") or {}
+    if op.get("state") != "completed" or "mapping" not in op:
+        return False
+    history = row.setdefault("cleanup_history", [])
+    if any(item["id"] == op["id"] for item in history):
+        return False
+    generation = row.get("cleanup_generation", 0)
+    history.append(
+        {
+            "id": op["id"],
+            "from": generation,
+            "to": generation + 1,
+            "mapping": op["mapping"],
+        }
+    )
+    row["cleanup_generation"] = generation + 1
+    # Maps can be large. Older browsers outside this window must recheck flags.
+    row["cleanup_history"] = history[-32:]
+    return True
+
+
 @contextlib.contextmanager
 def dataset_lock(store: Store, key: str):
     directory = store.path / "recycle-locks"
@@ -85,7 +108,17 @@ class RecycleBin:
 
     def _recover(self, row):
         op = row.get("operation") or {}
+        # An older failed/pending operation may have replaced the last completed
+        # operation before history existed. Do not call that dataset generation 0.
+        if "cleanup_generation" not in row and self._info(
+            Path(row["dataset_path"])
+        ).get("bodypipeline_revision"):
+            row["cleanup_generation"] = 1
+            row["cleanup_history"] = []
+            self.store.put("recycle", row["id"], row)
         if op.get("state") not in {"running", "pending"}:
+            if record_cleanup(row):
+                self.store.put("recycle", row["id"], row)
             return row
         pid = op.get("pid")
         if pid:
@@ -120,6 +153,8 @@ class RecycleBin:
             "entries": sorted(row["entries"].values(), key=lambda e: e["episode"]),
             "revision": row["revision"],
             "operation": operation,
+            "cleanup_generation": row.get("cleanup_generation", 0),
+            "cleanup_history": row.get("cleanup_history", []),
             "total_episodes": int(info["total_episodes"]),
             "total_frames": int(info["total_frames"]),
             "dataset_name": path.name,

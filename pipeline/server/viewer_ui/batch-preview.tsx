@@ -369,20 +369,23 @@ function BatchWall({ repoId }: { repoId: string }) {
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     setLoading(true);
     setError("");
     setPlaying(false);
     const recycle = repoId.startsWith("bp/")
       ? fetch(`/api/recycle/${encodeURIComponent(repoId.split("/")[1])}`, {
           cache: "no-store",
+          signal: controller.signal,
         }).then(async (response) => {
           const data = await response.json();
+          if (!active) throw new Error("预览请求已取消");
           if (!response.ok)
             throw new Error(data.detail || "回收站状态读取失败");
           if (["pending", "running"].includes(data.operation?.state))
             throw new Error("数据集正在清理，请完成后刷新预览");
-          if (data.operation?.state === "completed" && data.operation.mapping)
-            flags.remap(data.operation.mapping, data.operation.id);
+          if (!flags.remap(data))
+            throw new Error("待检查版本已更新，请重新加载预览");
           return new Set<number>(
             data.entries.map((entry: { episode: number }) => entry.episode),
           );
@@ -423,6 +426,7 @@ function BatchWall({ repoId }: { repoId: string }) {
       });
     return () => {
       active = false;
+      controller.abort();
     };
   }, [repoId, generation, flags.remap]);
 

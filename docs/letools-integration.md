@@ -330,7 +330,23 @@ uv run --with pyarrow python scripts/preview_annotations.py
 每格可标记“待检查”、筛选待检查数据，或进入现有单条标注页面。
 
 待检查标记与单条 Viewer 的旗标共用，按数据集保存在当前浏览器 `localStorage`，
-刷新仍保留、同源标签页同步，不作为服务端标注字段导出。永久清理重编号时跟随回收站映射。
+刷新仍保留、同源标签页同步，不作为服务端标注字段导出。标记与编号版本在同一条记录中保存，
+永久清理后按顺序补齐错过的映射；服务端保留最近 32 次清理历史。
+若旧浏览器标记没有版本、或所需历史已不存在，原记录保留但不显示在新的 Episode 上，
+页面提示重新核查，避免静默标错视频。升级后的记录使用 `bodypipeline:review-flags:v2:`，
+旧 v1 记录不删除。浏览器存储失败时保留本页修改；恢复写入时不以旧存储覆盖本页记录，
+若其他标签页在此期间也已更新，则暂停同步并提示核对。
+
+标记的真实 Chrome 组件回归可独立运行（不启动生产服务、不写采集数据）：
+
+```bash
+# 在独立目录安装测试依赖，避免改动项目依赖。
+npm install --prefix "$TMPDIR/bodypipeline-browser-tests" react@19 react-dom@19 esbuild playwright-core
+NODE_PATH="$TMPDIR/bodypipeline-browser-tests/node_modules" node tests/browser/review-flags.cjs
+# 非 macOS 默认 Chrome 路径时，通过 CHROME_BIN 指定浏览器可执行文件。
+```
+
+该测试使用原标记 Context 和批量页组件，目录与回收站响应受控；不替代真实视频性能验收。
 旧版无数据集归属的 `sessionStorage` 旗标不会自动分配给某个数据集。
 软删除的 Episode 不进入批量播放；切换批次或视角会暂停并释放上一批播放器。
 后台标签页暂停，重新聚焦会刷新目录，以读取其他窗口的清理结果。
