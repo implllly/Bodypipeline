@@ -389,6 +389,12 @@
                 <p class="panel-note small muted">调用 Argus review 对已登记的可读 LeRobot 数据集逐 Episode 生成任务描述、事件时间线、关键动作、状态变化与完成情况。数据集只读，标注结果保存在独立的 annotations 目录，不修改 Doctor 质检结果。</p>
                 <div id="annotation-unavailable" class="warning" hidden></div>
                 <form id="annotation-form" class="conversion-form">
+                  <label for="annotation-template">任务模板</label>
+                  <div class="action-row">
+                    <select id="annotation-template" disabled><option value="">自由分析（不使用模板）</option></select>
+                    <button id="annotation-template-refresh" class="secondary" type="button">刷新共享模板</button>
+                  </div>
+                  <p id="annotation-template-summary" class="small muted">在数据集标注页面创建并保存共享模板后，可在这里选择。AI 会按模板生成可修改的初稿。</p>
                   <div class="conversion-grid">
                     <div>
                       <label for="annotation-dataset">数据集 <span class="required">*</span></label>
@@ -523,6 +529,7 @@
         <div class="dataset-delete-body">
           <p class="small muted">续跑需要模型访问凭据。密钥只保存在 Server 内存中，任务结束或取消后清除；不写入任务记录、日志或导出结果。</p>
           <p class="small muted" id="annotation-resume-hint"></p>
+          <p class="small muted">模板任务会保留有效初稿，对不符合模板的模型回复重新请求；重试费用计入本次预算。</p>
           <label for="annotation-resume-base-url">模型 baseURL（留空使用服务器默认）</label>
           <input id="annotation-resume-base-url" type="url" autocomplete="off" placeholder="https://gateway.example.com/v1" />
           <label for="annotation-resume-api-key">模型 API Key（服务器已有默认密钥时可留空）</label>

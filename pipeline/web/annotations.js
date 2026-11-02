@@ -36,6 +36,8 @@
 
   let ui = null;
   let options = null;
+  let templateLibrary = { revision: 0, templates: [] };
+  let templateChoiceInitialized = false;
   let candidates = [];
   let rows = [];
   let selectedId = null;
@@ -85,6 +87,31 @@
   }
   function selectedCandidate() {
     return candidates.find((item) => item.job_id === $("annotation-dataset").value) || null;
+  }
+
+  function renderTemplates() {
+    const select = $("annotation-template");
+    const previous = select.value;
+    templateLibrary = options?.template_library || templateLibrary;
+    const templates = templateLibrary.templates || [];
+    select.innerHTML = '<option value="">自由分析（不使用模板）</option>' + templates.map(
+      (t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`,
+    ).join("");
+    if (previous && !templates.some((t) => t.id === previous)) {
+      select.insertAdjacentHTML("beforeend", `<option value="${esc(previous)}">原模板已删除，请重新选择</option>`);
+    }
+    select.value = !templateChoiceInitialized && templates.length ? templates[0].id : previous;
+    if (templates.length) templateChoiceInitialized = true;
+    renderTemplateSummary();
+  }
+
+  function renderTemplateSummary() {
+    const id = $("annotation-template").value;
+    const template = templateLibrary.templates.find((t) => t.id === id);
+    $("annotation-template-summary").textContent = template
+      ? `${template.subtasks.length} 个固定 Subtask · ${template.fields.length} 个自定义字段（整条任务 / 每次尝试 / 单帧）。本次任务使用当前模板，之后修改模板不会改变这次结果。${options?.template_available ? "" : "服务器需重新运行 scripts/install_argus.sh 安装模板支持。"}`
+      : id ? "原模板已删除，请刷新并重新选择。" : "自由分析由 AI 自行描述动作。要使用固定 Subtask 和自定义字段，请先在数据集标注页面创建并保存共享模板，再刷新选择。";
+    updateSubmit();
   }
   function scopedCandidates() {
     const scope = $("server-robot-type")?.value || "";
@@ -249,6 +276,20 @@
 
   function bind() {
     $("annotation-form").addEventListener("submit", submit);
+    $("annotation-template").addEventListener("change", () => {
+      templateChoiceInitialized = true;
+      renderTemplateSummary();
+    });
+    $("annotation-template-refresh").addEventListener("click", async () => {
+      const button = $("annotation-template-refresh");
+      button.disabled = true;
+      try {
+        const library = await ui.api("/api/task-templates");
+        options.template_library = library;
+        renderTemplates();
+      } catch (error) { ui.notice(error.message, true); }
+      finally { button.disabled = false; }
+    });
     $("server-robot-type")?.addEventListener("change", () => {
       renderDatasetOptions();
       updateSubmit();
@@ -388,6 +429,7 @@
   function setFormEnabled(enabled) {
     [
       "annotation-dataset",
+      "annotation-template",
       "annotation-model",
       "annotation-base-url",
       "annotation-api-key",
@@ -408,6 +450,7 @@
 
   function applyOptions() {
     if (!options) return;
+    renderTemplates();
     const defaults = options.defaults || {};
     $("annotation-model").innerHTML = (options.models || [])
       .map((model) => `<option value="${esc(model)}">${esc(model)}</option>`)
@@ -546,6 +589,7 @@
       Boolean($("annotation-dataset").value) &&
       Boolean(model) &&
       modelPriced(model) &&
+      (!$("annotation-template").value || (options?.template_available && templateLibrary.templates.some((t) => t.id === $("annotation-template").value))) &&
       (!needsKey || Boolean($("annotation-api-key").value.trim())) &&
       !modelFetching &&
       !submitting;
@@ -566,6 +610,7 @@
       ]);
       const wasAvailable = Boolean(options?.available);
       options = freshOptions || options;
+      renderTemplates();
       candidates = candidateResult.datasets || [];
       rows = list || [];
       if (options && !options.available) {
@@ -693,6 +738,7 @@
       <div class="annotation-meta small muted">
         <span>数据集：${esc(row.dataset_name)} · ${esc(row.robot_type || "未知机器人")} · rig ${esc(row.rig || "—")}</span>
         <span>模型：${esc(row.model || "—")} · 并发 ${esc(row.concurrency ?? "—")} · 推理 ${esc(row.reasoning || "默认")} · 采样 ${esc(row.sample_fps || "默认")}</span>
+        <span>模板：${esc(row.task_template?.name || "自由分析")} ${row.task_template ? `· 模板库版本 ${esc(row.template_library_revision)} · AI 初稿待人工确认` : ""}</span>
         <span>路径：${esc(row.dataset_path || "—")}</span>
         <span>创建 ${time(row.created_at)} · 开始 ${time(row.started_at)} · 结束 ${time(row.finished_at)}</span>
       </div>
@@ -1015,7 +1061,7 @@
         const target = [event.object, event.carry_phase].filter(Boolean).join(" · ");
         return `<button type="button" class="viewer-event" data-viewer-seek="${event.start}" data-viewer-start="${event.start}" data-viewer-end="${event.end}">
           <span class="viewer-event-time">${seconds(event.start)}</span>
-          <span class="viewer-event-body"><strong>${esc(event.verb_class || "未描述动作")}</strong>${target ? `<span class="sub">${esc(target)}</span>` : ""}</span>
+          <span class="viewer-event-body"><strong>${esc(event.verb_class || "未描述动作")}</strong>${target ? `<span class="sub">${esc(target)}</span>` : ""}${viewerData.task_document ? `<span class="sub">${esc(templateValues(event.values, "attempt"))}</span>` : ""}</span>
           <span class="viewer-event-tag">${esc([arm, event.contribution].filter(Boolean).join(" · "))}</span>
         </button>`;
       })
@@ -1042,6 +1088,8 @@
 
     body.innerHTML = `
       <p class="viewer-prompt"><strong>任务：</strong>${esc(prompt)}</p>
+      ${viewerData.task_document ? `<p class="small"><strong>模板初稿：${esc(viewerData.task_document.templateSnapshot.name)}</strong> · ${viewerData.task_document.attempts.length} 次尝试 · ${viewerData.task_document.nullSegments.length} 段 NULL · ${viewerData.task_document.frames.length} 条单帧标注<br>${esc(templateValues(viewerData.task_document.values, "episode"))}<br><span class="muted">生成 Subtask 数据集后，可在标注工作区逐项检查、修改和保存。</span></p>` : ""}
+      ${(viewerData.template_warnings || []).map((warning) => `<p class="warning small">${esc(warning)}</p>`).join("")}
       <div class="viewer-stage">${video}</div>
       <div class="viewer-timeline" data-viewer-timeline role="slider" tabindex="0" aria-label="事件时间线">
         <div class="viewer-track" id="annotation-viewer-track"><span class="viewer-playhead" id="annotation-viewer-playhead"></span></div>
@@ -1220,6 +1268,14 @@
     }
   }
 
+  function templateValues(values, scope) {
+    const fields = viewerData?.task_document?.templateSnapshot.fields || [];
+    return fields.filter((f) => f.scope === scope && values?.[f.id] != null).map((f) => {
+      const value = values[f.id];
+      return `${f.label}：${f.kind === "rating" ? `${value} 星` : Array.isArray(value) ? value.join("、") : typeof value === "boolean" ? value ? "是" : "否" : value}`;
+    }).join(" · ") || "未判断的字段留空";
+  }
+
   async function showEpisodeJson(episodeId) {
     const id = selectedId;
     if (!id) return;
@@ -1259,6 +1315,8 @@
     const apiKey = $("annotation-api-key").value.trim();
     const body = {
       job_id: jobId,
+      template_id: $("annotation-template").value || null,
+      template_revision: $("annotation-template").value ? templateLibrary.revision : null,
       model: $("annotation-model").value,
       cap_usd: Number($("annotation-cap").value),
       concurrency: Number($("annotation-concurrency").value),

@@ -7,6 +7,7 @@ import {
   readTaskReview,
   retargetDocument,
   reviewSnapshot,
+  sameTaskDocument,
   taskReviewPayload,
 } from "../pipeline/server/viewer_ui/task-review-client";
 import type { Review } from "../pipeline/server/viewer_ui/annotation-review-client";
@@ -47,6 +48,25 @@ function fixture() {
   };
   return { doc, review };
 }
+
+test("loading an unchanged shared template ignores JSON key order and keeps the AI draft clean", () => {
+  const { doc } = fixture();
+  const reordered = JSON.parse(
+    JSON.stringify(doc, (_key, value) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.keys(value)
+              .reverse()
+              .map((key) => [key, value[key]]),
+          )
+        : value,
+    ),
+  );
+  const applied = retargetDocument(doc, reordered.templateSnapshot);
+  expect(sameTaskDocument(applied, doc)).toBe(true);
+  applied.values["episode-quality"] = 3;
+  expect(sameTaskDocument(applied, doc)).toBe(false);
+});
 
 test("the studio saves exact attempt bounds, all scopes and NULL in one revision", () => {
   const { doc, review } = fixture();

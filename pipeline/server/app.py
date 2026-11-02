@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from fastapi import Body, FastAPI, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from pipeline.shared.collections import collection_metadata, group_uploads
 from pipeline.shared.core import DomainError, ProcessLock, executable_path
@@ -77,6 +77,8 @@ class AnnotationRequest(BaseModel):
     max_tokens: int | None = Field(default=None, ge=256, le=200000)
     base_url: str | None = Field(default=None, max_length=2048)
     api_key: str | None = Field(default=None, max_length=4096)
+    template_id: str | None = Field(default=None, min_length=1, max_length=160)
+    template_revision: StrictInt | None = Field(default=None, ge=0)
 
 
 class AnnotationResumeRequest(BaseModel):
@@ -594,6 +596,8 @@ def create_app(settings, background=True):
             max_tokens=body.max_tokens,
             base_url=body.base_url,
             api_key=body.api_key,
+            template_id=body.template_id,
+            template_revision=body.template_revision,
         )
 
     @app.get("/api/annotations/{aid}")

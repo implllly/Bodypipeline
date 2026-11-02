@@ -7,6 +7,7 @@ import { TaskAnnotationTimeline } from "./task-annotation-timeline";
 import { reviewRequest } from "../utils/annotation-review-client";
 import {
   retargetDocument,
+  sameTaskDocument,
   taskSegments,
   type TemplateLibrary,
 } from "../utils/task-review-client";
@@ -1424,7 +1425,7 @@ function ManagedStudio({
     if (!shared) return;
     try {
       const next = retargetDocument(doc, shared);
-      if (JSON.stringify(next) !== JSON.stringify(doc)) {
+      if (!sameTaskDocument(next, doc)) {
         updateTaskDocument(next);
         setStatus(
           "已应用共用模板的最新字段，旧记录保留；请核对后保存 Episode。",

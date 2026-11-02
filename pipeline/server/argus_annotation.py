@@ -86,6 +86,26 @@ def source_path(settings) -> Path:
     return Path(settings.argus_src).expanduser()
 
 
+def template_available(settings) -> bool:
+    root = source_path(settings)
+    try:
+        marker = "pipeline-argus-task-template:v1"
+        return (
+            all(
+                marker in (root / name).read_text()
+                for name in (
+                    "label/episode.py",
+                    "label/harness.py",
+                    "label/pipeline_template.py",
+                )
+            )
+            and "pipeline-argus-template-retry:v1"
+            in (root / "label/harness.py").read_text()
+        )
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------- price table
 # Argus reserves the worst case of a model call before dispatching it, and
 # refuses a capped run whose model it cannot price.  A gateway publishes model
@@ -349,19 +369,24 @@ def environment(
 
     source = source_path(settings)
     env = settings.tool_environment()
+    # Only this task's frozen snapshot may shape the request, never an inherited
+    # environment variable from another run or a live edit of the template library.
+    env.pop("PIPELINE_ARGUS_TASK_TEMPLATE", None)
+    if annotation.get("task_template"):
+        from .template_annotation import SPEC_NAME
+
+        env["PIPELINE_ARGUS_TASK_TEMPLATE"] = str(
+            Path(annotation["work_path"]) / SPEC_NAME
+        )
     env["PYTHONPATH"] = str(source) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
-    env["PATH"] = os.pathsep.join(
-        [str(source / "tools/bin"), env.get("PATH", "")]
-    )
+    env["PATH"] = os.pathsep.join([str(source / "tools/bin"), env.get("PATH", "")])
     env.setdefault("MALLOC_ARENA_MAX", "2")
 
     cameras = provider_context.get("cameras") or {}
     if cameras:
-        env["PIPELINE_ARGUS_CAMERA_MOUNTING"] = json.dumps(
-            cameras, ensure_ascii=False
-        )
+        env["PIPELINE_ARGUS_CAMERA_MOUNTING"] = json.dumps(cameras, ensure_ascii=False)
     if settings.argus_base_url:
         env["PIPELINE_ARGUS_BASE_URL"] = settings.argus_base_url
         env["PIPELINE_ARGUS_GENERIC_GATEWAY"] = "1"
@@ -435,6 +460,11 @@ def command(settings, annotation: dict, data: Path, work: Path) -> list[str]:
     max_tokens = annotation.get("max_tokens")
     if max_tokens:
         args += ["--max-tokens", str(int(max_tokens))]
+    if annotation.get("task_template") and int(annotation.get("attempts") or 0) > 1:
+        from .template_annotation import invalid_received_units
+
+        for name in invalid_received_units(work):
+            args += ["--retry-received", name]
     return [python, *args]
 
 
@@ -512,7 +542,11 @@ def _summary(name: str, data: dict, source: str) -> dict:
     completion = completion if isinstance(completion, dict) else {}
     meta = data.get("_meta") if isinstance(data.get("_meta"), dict) else {}
     failed = _label_failure(data)
-    timeline = data.get("event_labels") or labels.get("timeline") or []
+    timeline = (
+        data.get("event_labels", [])
+        if "task_document" in data
+        else data.get("event_labels") or labels.get("timeline") or []
+    )
     key_events = data.get("key_events") or labels.get("key_events") or []
     prompt = data.get("episode_prompt") or labels.get("task_summary") or ""
     duration = data.get("duration_s")
@@ -546,12 +580,21 @@ def _summary(name: str, data: dict, source: str) -> dict:
         "model": meta.get("model") or data.get("model"),
         "usage": data.get("_usage") or data.get("usage"),
         "source": source,
+        "template_name": data.get("template_name"),
+        "template_warnings": data.get("template_warnings", []),
     }
 
 
 def outputs(work: Path) -> list[dict]:
     """Every episode the run produced, newest output layout first."""
 
+    from .template_annotation import SPEC_NAME
+
+    if (Path(work) / SPEC_NAME).exists():
+        return [
+            _summary(name, value, "template")
+            for name, value in episode_results(work).items()
+        ]
     argus = Path(work) / "argus"
     rows: list[dict] = []
     seen: set[str] = set()
@@ -624,12 +667,18 @@ def episode_results(work: Path) -> dict[str, dict]:
             continue
         episode = Path(str(data.get("episode_dir") or name)).name or name
         rows.setdefault(episode, data)
-    return rows
+    from .template_annotation import assemble_results
+
+    return assemble_results(Path(work), rows)
 
 
 def episode(work: Path, episode_id: str) -> dict | None:
     if not isinstance(episode_id, str) or not _EPISODE_ID.fullmatch(episode_id):
         return None
+    from .template_annotation import SPEC_NAME
+
+    if (Path(work) / SPEC_NAME).exists():
+        return episode_results(work).get(episode_id)
     argus = Path(work) / "argus"
     for path in _qa_files(argus):
         data = _read_json(path)
@@ -765,7 +814,20 @@ def cost(work: Path) -> dict:
 
 def progress(work: Path) -> dict:
     argus = Path(work) / "argus"
-    units = len(list((argus / "units").glob("episode_*"))) if (argus / "units").is_dir() else 0
+    from .template_annotation import SPEC_NAME
+
+    if (Path(work) / SPEC_NAME).exists():
+        rows = outputs(work)
+        return {
+            "units": len(list((argus / "units").glob("episode_*"))),
+            "labelled": sum(r["labels_available"] for r in rows),
+            "episodes": len(rows),
+        }
+    units = (
+        len(list((argus / "units").glob("episode_*")))
+        if (argus / "units").is_dir()
+        else 0
+    )
     # A resumed run may label into run_final while run/out is being rebuilt.
     labelled: set[str] = set()
     for directory in (argus / "run/out", argus / "run_final/out"):

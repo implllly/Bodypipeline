@@ -31,6 +31,7 @@ from .datasets import TARGET_FORMATS, dataset_for_job
 from .merges import source_snapshot
 from .recycle import dataset_lock
 from .storage import ROBOT_LAYOUT, data_directory, share_data_tree, storage_path
+from .task_annotations import TaskDocument, validate_document
 
 # A frame no annotated step covers keeps -1.  It is never filled with an
 # invented "idle" step and never with the episode's overall task.
@@ -253,7 +254,14 @@ def build_plan(settings, row) -> dict:
     if type(total_episodes) is not int or total_episodes < 1:
         raise DomainError("来源数据集缺少有效的 Episode 总数", 409)
     dataset_fps = _number(dataset.get("fps")) or 0.0
-    vocabulary: dict[str, int] = {}
+    template = row.get("task_template")
+    if template and digest(template) != row.get("template_signature"):
+        raise DomainError("AI 任务模板快照校验失败", 409)
+    vocabulary: dict[str, int] = (
+        {s["name"].strip(): i for i, s in enumerate(template["subtasks"])}
+        if template
+        else {}
+    )
     episodes: list[dict] = []
     skipped: list[dict] = []
     seen: dict[int, str] = {}
@@ -266,7 +274,10 @@ def build_plan(settings, row) -> dict:
         index, source = _episode_index(episode_id, context)
         if index is None:
             skipped.append(
-                {"episode_id": episode_id, "reason": "无法确定该标注对应的数据集 Episode"}
+                {
+                    "episode_id": episode_id,
+                    "reason": "无法确定该标注对应的数据集 Episode",
+                }
             )
             continue
         if not 0 <= index < total_episodes:
@@ -292,12 +303,34 @@ def build_plan(settings, row) -> dict:
             frames = round(duration * fps) if duration and fps else 0
         if frames < 1 or fps <= 0:
             skipped.append(
-                {"episode_id": episode_id, "reason": "标注缺少帧数或帧率，无法对齐逐帧标签"}
+                {
+                    "episode_id": episode_id,
+                    "reason": "标注缺少帧数或帧率，无法对齐逐帧标签",
+                }
             )
             continue
-        spans = _timeline(_events(data), frames / fps)
-        ranges = _frame_ranges(spans, fps, frames, vocabulary)
-        if not ranges:
+        document = None
+        if template:
+            try:
+                document = validate_document(
+                    TaskDocument.model_validate(data.get("task_document")), frames
+                )
+                if document["templateSnapshot"] != template:
+                    raise ValueError("模板快照不匹配")
+            except ValueError as exc:
+                skipped.append(
+                    {"episode_id": episode_id, "reason": f"模板标注无效：{exc}"}
+                )
+                continue
+            # Preserve adjacent retries instead of the legacy text-based merge.
+            ranges = [
+                [a["start"], a["end"], vocabulary[a["subtaskName"].strip()]]
+                for a in document["attempts"]
+            ]
+        else:
+            spans = _timeline(_events(data), frames / fps)
+            ranges = _frame_ranges(spans, fps, frames, vocabulary)
+        if not ranges and document is None:
             skipped.append(
                 {"episode_id": episode_id, "reason": "事件时间线没有可落帧的区间"}
             )
@@ -314,6 +347,14 @@ def build_plan(settings, row) -> dict:
                 "labelled_frames": _covered_frames(ranges),
                 "coverage": round(_covered_frames(ranges) / frames, 6),
                 "segments": ranges,
+                **(
+                    {
+                        "task_document": document,
+                        "template_warnings": data.get("template_warnings", []),
+                    }
+                    if document is not None
+                    else {}
+                ),
             }
         )
     episodes.sort(key=lambda item: item["episode_index"])
@@ -347,14 +388,19 @@ def build_plan(settings, row) -> dict:
             "labelled_frames": labelled_frames,
             "unannotated_frames": total_frames - labelled_frames,
             "ratio": round(labelled_frames / total_frames, 6) if total_frames else 0.0,
-            "labelled_ratio": round(len(episodes) / total_episodes, 6) if total_episodes else 0.0,
+            "labelled_ratio": round(len(episodes) / total_episodes, 6)
+            if total_episodes
+            else 0.0,
         },
         "digest": digest(
             {
                 "dataset": row["dataset_path"],
                 "source": row.get("source"),
                 "episodes": [
-                    [item["episode_index"], item["segments"]] for item in episodes
+                    [item["episode_index"], item["segments"], item.get("task_document")]
+                    if template
+                    else [item["episode_index"], item["segments"]]
+                    for item in episodes
                 ],
                 "vocabulary": sorted(vocabulary.items(), key=lambda pair: pair[1]),
             }

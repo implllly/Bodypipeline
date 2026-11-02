@@ -455,6 +455,23 @@ OpenRouter 形状的密钥）；已知模型按 OpenAI 列表价计入费用上�
 
 ### 6.4.1 自动标注任务
 
+**按共享模板初标**：先在数据集的任务标注工作区创建并保存模板，再到「自动标注」选择同一模板；可点击「刷新共享模板」读取其他窗口的新模板。提交接口增加 `template_id` 和 `template_revision`，Server 检查模板库版本并冻结完整模板及摘要，写入任务记录和 `annotations/<id>/task-template.json`。后续模板编辑不会改变已提交任务或续跑结果。保留「自由分析（不使用模板）」兼容原有流程。
+
+更新此功能时需在 Argus 所在环境重新执行 `bash scripts/install_argus.sh`，安装请求提示词和内容身份补丁。缺少补丁时 Server 拒绝模板任务，页面显示安装提示。模板快照的摘要参与 Argus 请求身份校验；预算、密钥、取消、费用记录和续跑仍使用原有 Argus 机制，没有增加第二次模型调用。
+
+模板任务要求模型在正常 Argus 结果外返回 `bodypipeline_task`：固定 Subtask ID、逐次尝试、Episode / attempt / frame 自定义值、明确的 NULL 区间和稀疏单帧标注。Server 校验固定 ID、字段作用范围、类型、选项、1–5 星、时间边界和不重叠约束；不合格的 Episode 显示失败，不回退到自由动作描述或自动扩充模板。显式续跑仅对不合格的已接收请求使用 Argus `--retry-received`，保留有效请求与费用凭据；重试仍消耗原任务预算。
+
+导出的独立数据集同时写逐帧 `subtask_index` 和完整任务 sidecar，保留相邻同名的多次尝试、自定义值、NULL、单帧备注及模板快照；进入新标注工作区后可人工修改、保存并导出修订副本。未观察或无法判断的值留空，不等同于 NULL。长 Episode 根据请求分段恢复原视频帧位置，重叠窗口只归属一次；仅双方都明确声明跨系统切段延续时连接尝试，整体评价留空交由人工填写，不把局部评分当作整条任务评分。AI 评分和选项属于待确认初稿，实际质量取决于输入证据及字段含义。
+
+本地离线演示（合成视频、合成模型回复，无付费调用）：
+
+```bash
+uv run --with pyarrow python scripts/preview_template_ai.py \
+  --viewer-source .runtime/annotation-preview/viewer/source
+```
+
+要求已有固定版本 Viewer 缓存和 LeTools 环境。管理台 `http://127.0.0.1:18091`，Viewer `18092`，内部 UI `13110`，登录密码 `annotation-demo`。模型明确显示为 `mock/template-demo`，演示数据位于 `.runtime/template-ai-preview/`。在管理台提交模板任务、查看初稿、生成 Subtask 数据集，然后打开预览检查和保存。按 Ctrl+C 停止演示。
+
 侧栏“自动标注”直接用同一个 Argus 环境调用官方 `review` 流程，由 Server
 子进程执行。模型访问凭据可在页面按任务填写：每次提交或续跑都可以指定
 `baseURL` 与 `API Key`，留空时使用服务器配置或环境变量中的默认值。配置
