@@ -281,7 +281,7 @@ def test_native_manifest_accepted_by_server(native, settings_factory, tmp_path):
     assert response["manifest_hash"] == digest(manifest)
 
 
-def test_batch_api_capabilities_auth_and_end(native, monkeypatch):
+def test_batch_api_capabilities_without_key_gate_and_end(native, monkeypatch):
     from fastapi.testclient import TestClient
 
     from pipeline.client.app import create_app
@@ -291,8 +291,6 @@ def test_batch_api_capabilities_auth_and_end(native, monkeypatch):
     monkeypatch.setattr("pipeline.client.app.CaptureService", lambda settings: service)
     app = create_app(service.settings, background=False)
     with TestClient(app) as http:
-        assert http.post("/api/capture-batches", json=request()).status_code == 401
-        http.headers["Authorization"] = f"Bearer {service.settings.token}"
         assert http.get("/api/config").json()["capture_capabilities"][
             "external_trigger"
         ]

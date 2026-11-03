@@ -382,17 +382,36 @@ def index_recording(
     grid, segments = _grid(
         episode, profile["output_fps"], cfg.get("max_frames", 1_000_000)
     )
+    first_recorded_packet = True
+    pre_start_control_lead_ms = []
     for offset, packet in _iter_records(path, expected):
         if not isinstance(packet, dict) or type(packet.get("context")) is not bool:
             raise DomainError("Invalid G1 raw envelope/context marker")
         received = _ns(packet.get("receive_monotonic_ns"), "receive timestamp")
+        # The collector handles the PICO start command before appending its
+        # original packet, so that first control packet predates episode start.
+        start_control = (
+            first_recorded_packet
+            and not packet["context"]
+            and packet.get("source") == "pico"
+            and packet.get("topic") == "manager_state"
+            and received < episode["start_monotonic_ns"]
+        )
         if (
             not packet["context"]
             and not episode["start_monotonic_ns"]
             <= received
             <= episode["end_monotonic_ns"]
+            and not start_control
         ):
             raise DomainError("G1 packet lies outside the declared episode")
+        if not packet["context"]:
+            first_recorded_packet = False
+        if start_control:
+            pre_start_control_lead_ms.append(
+                (episode["start_monotonic_ns"] - received) / 1e6
+            )
+            continue
         if packet.get("source") == "robot" and packet.get("topic") == "robot_config":
             recorded = _payload(packet, b"robot_config")
             current = _config_identity(recorded)
@@ -552,6 +571,7 @@ def index_recording(
         "source_end_monotonic_ns": int(grid[-1]),
         "robot_max_age_ms": float(arrays["source.robot_age_ms"].max()),
         "camera_timestamp_fallbacks": fallbacks,
+        "pre_start_control_lead_ms": pre_start_control_lead_ms,
         "recorded_config": {
             k: robot_config[k]
             for k in ("hand_type", "hand_num_motors", "hand_units", "model_path")

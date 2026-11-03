@@ -1,0 +1,91 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SONIC Onboard Data Visualizer</title>
+<link rel="stylesheet" href="/assets/onboard_collection.css">
+
+<style>:root{color-scheme:dark;--bg:#0b1017;--panel:#121a24;--line:#263445;--text:#e8eef7;--muted:#8fa1b5;--ok:#43d17c;--bad:#ff6470}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px system-ui,sans-serif}header{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;padding:14px 20px;background:#0b1017ee;border-bottom:1px solid var(--line)}h1{font-size:18px;margin:0}h2{font-size:16px}.muted{color:var(--muted)}main{padding:16px;display:grid;gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}.sources{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.source{padding:10px;border:1px solid var(--line);border-radius:9px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--bad);margin-right:7px}.dot.ok{background:var(--ok)}.cameras{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.camera{background:#070a0f;border-radius:9px;overflow:hidden;min-height:180px}.camera img{width:100%;display:block}.camera label{display:block;padding:8px;color:var(--muted)}.toolbar{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px;margin-bottom:10px}input,button{background:#0c131d;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:9px}button{cursor:pointer}.signal-list{max-height:190px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px}.signal-list label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:3px}.signal-list input{vertical-align:middle;margin-right:6px}.chart-wrap{height:390px;border-top:1px solid var(--line);margin-top:12px;padding-top:10px}canvas{width:100%;height:100%}.empty{text-align:center;padding:55px;color:var(--muted)}@media(max-width:640px){header{gap:8px;flex-direction:column}.toolbar{grid-template-columns:1fr}.chart-wrap{height:300px}}</style></head>
+<body><header><h1>SONIC Onboard Data Visualizer</h1><div><span id="summary" class="muted">正在连接…</span></div></header><main>
+<section id="collection" class="panel collection" aria-labelledby="collection-title">
+  <h2 id="collection-title">采集控制</h2>
+  <div class="collection-row">
+    <span data-field="session-state" class="collection-badge">连接中</span>
+    <span data-field="record-state" class="collection-badge">未录制</span>
+    <span class="collection-badge collection-warning">无鉴权 · 非急停</span>
+  </div>
+  <div class="collection-row collection-fields">
+    <label>输出子目录<input name="subdirectory" placeholder="可留空" maxlength="64" autocomplete="off"></label>
+    <label>Dataset 名称<input name="dataset_name" placeholder="例如 pickup_001" maxlength="64" autocomplete="off"></label>
+    <label class="collection-prompt">任务 prompt<input name="task_prompt" placeholder="任务名称" maxlength="400" autocomplete="off"></label>
+  </div>
+  <div data-field="preferences-state" class="muted" role="status">配置自动保存在当前浏览器、当前地址；刷新不会自动启动服务。</div>
+  <div class="collection-row collection-depth">
+    <label><input name="raw_only" type="checkbox" disabled>仅保存原始数据（Raw）</label>
+    <span data-field="output-format" class="muted">输出格式：连接中</span>
+    <span class="muted">Raw 模式跳过在线 LeRobot 转换，需在采集后离线转换。</span>
+  </div>
+  <div class="collection-row collection-depth">
+    <label><input name="camera_depth" type="checkbox" disabled>启用深度流</label>
+    <span data-field="camera-depth-state" class="muted">状态未知</span>
+    <span class="muted">切换会短暂中断共享相机的 RGB；仅可在启动服务前操作。</span>
+  </div>
+  <div class="collection-row">
+    <button data-action="session-start" class="collection-primary" disabled>启动服务</button>
+    <button data-action="session-stop" class="collection-danger" disabled>强制停止服务</button>
+    <span data-field="output" class="muted"></span>
+  </div>
+  <div class="collection-row collection-episode">
+    <button data-action="start" class="collection-primary" disabled>开始录制</button>
+    <button data-action="stop" disabled>停止并保存</button>
+    <button data-action="discard" class="collection-danger" disabled>废弃当前集</button>
+    <span class="muted">Episode <b data-field="index">--</b> · <b data-field="frames">0</b> <span data-field="count-unit">帧</span></span>
+    <span data-field="episode-result" class="muted"></span>
+  </div>
+  <div data-field="message" class="muted" role="status"></div>
+  <div class="muted">POSE：B+Y 保持姿态和双手并暂停采集；保持时 B+Y / A+X 恢复并续录。</div>
+  <div data-field="connection-error" class="collection-error" role="alert"></div>
+  <div data-field="error" class="collection-error" role="alert"></div>
+</section>
+
+<section class="panel"><div id="sources" class="sources"></div></section>
+<section class="panel camera-panel"><h2>实时相机</h2><div class="muted">最多预览三路 RGB；深度采集和录制由相机配置决定。</div><div id="cameras" class="cameras"><div class="empty">等待 5555 相机数据…</div></div></section>
+
+<section class="panel signal-panel"><h2>实时曲线</h2><div class="toolbar"><input id="search" placeholder="搜索 body_q、action、smpl、planner…"><button id="clear">清空选择</button></div><div id="signals" class="signal-list"><span class="muted">等待数值信号…</span></div><div class="chart-wrap"><canvas id="chart"></canvas></div><div class="muted">最多 16 条曲线；横轴为配置的历史窗口，纵轴自动缩放。曲线区域只读。</div></section></main>
+<script type="module">
+let collection=null,lastTelemetry=null;
+const inferenceRoot=document.getElementById('inference');
+if(inferenceRoot){
+  import('/assets/onboard_inference.js').then(({mountInference})=>mountInference(inferenceRoot))
+    .catch(error=>{inferenceRoot.querySelector('[data-field="error"]').textContent=`推理面板加载失败：${error.message}`});
+}
+const collectionRoot=document.getElementById('collection');
+if(collectionRoot){
+  import('/assets/onboard_collection.js').then(({mountCollection})=>{
+    collection=mountCollection(collectionRoot);
+    if(lastTelemetry)collection.updateTelemetry(lastTelemetry);
+  }).catch(error=>{collectionRoot.querySelector('[data-field="connection-error"]').textContent=`采集组件加载失败：${error.message}`});
+}
+const colors=['#58a6ff','#43d17c','#ff9f43','#d978ff','#ff6470','#46d9e8','#ffd166','#95e06c','#f78fb3','#a29bfe','#00cec9','#e17055','#74b9ff','#55efc4','#fdcb6e','#fab1a0'];let known=[],selected=[],windowSeconds=20;const $=id=>document.getElementById(id);const esc=s=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));async function get(url){const r=await fetch(url,{cache:'no-store',signal:AbortSignal.timeout(5000)});if(!r.ok)throw Error(r.status);return r.json()}
+function sources(s){$('summary').textContent=`运行 ${s.uptime_seconds}s · ${s.signal_count} 个数值信号`;$('sources').innerHTML=Object.entries(s.sources).filter(([n])=>!inferenceRoot||['camera','robot'].includes(n)).map(([n,v])=>`<div class="source"><div><span class="dot ${v.online?'ok':''}"></span><b>${n==='camera'?'camera 总消息（非单路 FPS）':esc(n)}</b></div><div class="muted">${v.online?v.rate_hz+' Hz · '+v.age_ms+' ms':'等待数据'}${v.error?'<br>'+esc(v.error):''}</div></div>`).join('');renderCameras(s)}
+const cameraViews=new Map();
+function renderCameras(s){
+  // HTTP/1.1 browsers typically allow six connections per origin. Six
+  // permanent MJPEG streams would starve status and control requests.
+  const names=s.cameras.filter(name=>!name.endsWith('_depth')).slice(0,3);
+  if(!cameraViews.size&&names.length)$('cameras').replaceChildren();
+  for(const [name,view] of cameraViews)if(!names.includes(name)){view.node.remove();cameraViews.delete(name)}
+  for(const name of names){
+    let view=cameraViews.get(name);
+    if(!view){const node=document.createElement('div'),label=document.createElement('label'),screen=document.createElement('div');node.className='camera';node.dataset.camera=name;node.append(label,screen);view={node,label,screen,img:null};cameraViews.set(name,view)}
+    // Leave live <img> nodes attached when the camera order has not changed.
+    const position=names.indexOf(name),current=$('cameras').children[position];
+    if(current!==view.node)$('cameras').insertBefore(view.node,current||null);
+    const age=s.camera_age_ms?.[name],online=s.sources.camera?.online&&age!==undefined&&age>=-1000&&age<500;
+    view.label.textContent=`${name} · ${online?(s.camera_rates_hz?.[name]??'--')+' Hz · '+Math.round(age)+' ms':'离线'}`;
+    if(online&&!view.img){const img=document.createElement('img');img.alt=name;img.onerror=()=>{img.removeAttribute('src');view.img=null;view.screen.textContent='画面中断，正在重连…'};img.src=`/api/camera/${encodeURIComponent(name)}.mjpg`;view.screen.replaceChildren(img);view.img=img}
+    if(!online){if(view.img){view.img.removeAttribute('src');view.img=null}view.screen.textContent='等待相机数据…'}
+  }
+}
+function list(){const q=$('search').value.toLowerCase(),items=known.filter(n=>n.toLowerCase().includes(q));$('signals').innerHTML=items.slice(0,500).map(n=>`<label title="${esc(n)}"><input type="checkbox" data-signal="${esc(n)}" ${selected.includes(n)?'checked':''}>${esc(n)}</label>`).join('')||'<span class="muted">没有匹配信号</span>';document.querySelectorAll('[data-signal]').forEach(c=>c.onchange=()=>{const n=c.dataset.signal;if(c.checked){if(selected.length>=16){c.checked=false;alert('最多选择 16 条曲线')}else selected.push(n)}else selected=selected.filter(x=>x!==n)})}
+function defaults(){const p=['robot.body_q[0]','robot.body_q[1]','robot.last_action[0]','robot.last_action[1]','planner.movement[0]','planner.movement[1]'];selected=p.filter(x=>known.includes(x));if(!selected.length)selected=known.slice(0,6)}
+function draw(series,now){const a=$('chart'),d=devicePixelRatio||1,r=a.getBoundingClientRect();a.width=r.width*d;a.height=r.height*d;const c=a.getContext('2d');c.scale(d,d);const w=r.width,h=r.height,p={l:55,r:16,t:20,b:75},all=selected.flatMap(n=>(series[n]||[]).map(x=>x[1]));c.clearRect(0,0,w,h);if(!all.length){c.fillStyle='#8fa1b5';c.textAlign='center';c.fillText(selected.length?'等待所选信号数据…':'请勾选要显示的信号',w/2,h/2);return}let lo=Math.min(...all),hi=Math.max(...all);if(lo===hi){lo-=1;hi+=1}const m=(hi-lo)*.08;lo-=m;hi+=m;const xmin=now-windowSeconds;c.strokeStyle='#263445';c.fillStyle='#8fa1b5';c.font='11px system-ui';c.textAlign='right';for(let i=0;i<=4;i++){const y=p.t+(h-p.t-p.b)*i/4;c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.fillText((hi-(hi-lo)*i/4).toFixed(2),p.l-7,y+4)}selected.forEach((n,i)=>{c.strokeStyle=colors[i%colors.length];c.lineWidth=1.6;c.beginPath();(series[n]||[]).forEach((v,j)=>{const x=p.l+(v[0]-xmin)/windowSeconds*(w-p.l-p.r),y=p.t+(hi-v[1])/(hi-lo)*(h-p.t-p.b);j?c.lineTo(x,y):c.moveTo(x,y)});c.stroke()});c.textAlign='left';selected.forEach((n,i)=>{c.fillStyle=colors[i%colors.length];c.fillText(n,8+(i%4)*(w/4),h-52+Math.floor(i/4)*14)})}
+async function status(){try{lastTelemetry=await get('/api/status');sources(lastTelemetry);collection?.updateTelemetry(lastTelemetry)}catch(e){lastTelemetry=null;collection?.updateTelemetry(null);$('summary').textContent='遥测连接失败'}try{const s=await get('/api/signals');if(JSON.stringify(known)!==JSON.stringify(s.signals)){const first=!known.length;known=s.signals;if(first)defaults();list()}}catch(e){}finally{setTimeout(status,1000)}}async function chart(){if(!selected.length){draw({},Date.now()/1000);return}try{const d=await get('/api/history?'+selected.map(n=>'signal='+encodeURIComponent(n)).join('&'));windowSeconds=d.window_seconds;draw(d.series,d.now)}catch(e){}}
+$('search').oninput=list;$('clear').onclick=()=>{selected=[];list();draw({},Date.now()/1000)};setInterval(chart,250);status();chart();
+</script></body></html>

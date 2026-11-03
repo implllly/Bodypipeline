@@ -1,0 +1,107 @@
+<section id="bp-client" class="bp-client" aria-label="BodyPipeline Client">
+  <header class="bp-client-header">
+    <div>
+      <span class="bp-client-eyebrow">BODY PIPELINE CLIENT</span>
+      <h2>数据采集与管理</h2>
+      <p>在原版 SONIC 数采页面下方管理采集批次、本地数据与上传队列。</p>
+    </div>
+    <div class="bp-client-header-actions">
+      <span id="bp-connection" class="bp-badge">正在连接…</span>
+      <button id="bp-refresh" type="button">刷新</button>
+    </div>
+  </header>
+
+  <div id="bp-notice" class="bp-notice" role="status" hidden></div>
+
+  <div class="bp-client-grid">
+    <section class="bp-panel">
+      <div class="bp-panel-heading">
+        <div>
+          <span class="bp-kicker">NATIVE SERVICE</span>
+          <h3>数采基础服务</h3>
+        </div>
+        <span id="bp-service-state" class="bp-badge">状态待更新</span>
+      </div>
+      <div class="bp-service-body">
+        <div id="bp-service-summary" class="bp-batch-summary">
+          正在读取 8081 数采服务状态…
+        </div>
+        <div class="bp-actions">
+          <button id="bp-prepare-service" class="bp-primary" type="button">
+            启动数采基础服务
+          </button>
+        </div>
+        <p class="bp-hint">
+          启动基础服务不会自动启动机器人或录制。采集配置、启动、录制、保存和丢弃继续使用上方原版采集控制。
+        </p>
+      </div>
+    </section>
+
+    <section class="bp-panel">
+      <div class="bp-panel-heading">
+        <div>
+          <span class="bp-kicker">SESSION</span>
+          <h3>当前批次</h3>
+        </div>
+        <span id="bp-batch-state" class="bp-badge">无活动批次</span>
+      </div>
+      <div id="bp-batch-summary" class="bp-batch-summary">
+        尚未启动采集批次。
+      </div>
+      <label for="health-detail" class="bp-details-label">运行状态</label>
+      <details class="bp-diagnostic">
+        <summary>查看适配器与后台任务详情</summary>
+        <pre id="health-detail">正在读取健康状态…</pre>
+      </details>
+    </section>
+  </div>
+
+  <section class="bp-panel">
+    <div class="bp-panel-heading">
+      <div>
+        <span class="bp-kicker">DATASETS</span>
+        <h3>我的数据集</h3>
+      </div>
+      <span class="bp-hint">同名任务创建独立批次并归入同一数据集</span>
+    </div>
+    <div class="bp-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>数据集</th>
+            <th>已封存 / 已上传</th>
+            <th>存储目标</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="client-dataset-list"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="bp-panel">
+    <div class="bp-panel-heading">
+      <div>
+        <span class="bp-kicker">UPLOAD QUEUE</span>
+        <h3>采集与上传队列</h3>
+      </div>
+      <span class="bp-hint">断网后自动重试 · 本地文件不自动删除</span>
+    </div>
+    <div class="bp-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>采集 / 任务</th>
+            <th>采集状态</th>
+            <th>上传目标</th>
+            <th>上传进度</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="capture-list"></tbody>
+      </table>
+    </div>
+  </section>
+</section>
+
+<script src="/assets/sonic-client.js" defer></script>

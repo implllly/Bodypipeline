@@ -1,0 +1,33 @@
+{
+  "root": "/home/unitree/.bp-g1",
+  "mode": "external",
+  "robot_id": "g1-001",
+  "project_id": "teleop",
+  "server_url": "http://SERVER_ADDRESS:8081",
+  "local_roots": {"default": "/workspace/unitree/bodypipeline-captures"},
+  "profiles": {
+    "g1_sonic11_brainco": {
+      "profile_path": "configs/g1-sonic11-brainco-v1.json",
+      "provider": "g1_sonic",
+      "raw_formats": ["g1_sonic_raw_v1"]
+    }
+  },
+  "default_profile": "g1_sonic11_brainco",
+  "capture": {
+    "adapter": "g1_sonic_onboard",
+    "repository": "/workspace/unitree/GR00T-WholeBodyControl",
+    "python": "/workspace/unitree/GR00T-WholeBodyControl/.venv_camera/bin/python",
+    "service_url": "http://127.0.0.1:8081",
+    "robotics_service_script": "/opt/apps/roboticsservice/runService.sh",
+    "deploy_checkpoint": "policy/sonic_v1_1/model",
+    "deploy_obs_config": "policy/sonic_v1_1/observation_config.yaml",
+    "pose_walk": true,
+    "pose_walk_max_speed": 0.3
+  },
+  "background_transfer": {
+    "enabled": true,
+    "idle_seconds": 20,
+    "sample_seconds": 1,
+    "chunk_bytes": 1048576
+  }
+}

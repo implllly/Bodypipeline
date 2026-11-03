@@ -214,6 +214,62 @@ def test_explicit_padding_preserves_native_values(tmp_path, g1_profile):
     assert numeric_features(g1_profile)["action"]["units"][0] == "latent"
 
 
+def test_first_pico_start_packet_may_precede_episode_without_changing_raw(
+    tmp_path, g1_profile
+):
+    def mutate(packets):
+        packet = _packet("pico", "manager_state", START - 1_005_146, {})
+        packet["context"] = False
+        packets.insert(3, packet)
+
+    path, _ = write_episode(tmp_path / "episode", mutate=mutate)
+    before = path.read_bytes()
+    recording = load(path, g1_profile)
+    assert recording.report["pre_start_control_lead_ms"] == [1.005146]
+    assert recording.report["frames"] == 4
+    np.testing.assert_allclose(recording.arrays["source.robot_age_ms"], 10)
+    assert path.read_bytes() == before
+    assert len(list(iter_raw_packets(path))) == 12
+
+
+@pytest.mark.parametrize(
+    "source,topic,relative,first",
+    [
+        ("robot", "g1_debug", -1_000_000, True),
+        ("robot", "robot_config", -1_000_000, True),
+        ("camera", "", -1_000_000, True),
+        ("pico", "pose", -1_000_000, True),
+        ("pico", "manager_state", -1_000_000, False),
+        ("pico", "manager_state", 401_000_000, True),
+        ("robot", "g1_debug", 401_000_000, False),
+        ("camera", "", 401_000_000, False),
+    ],
+)
+def test_other_noncontext_packets_still_require_episode_bounds(
+    tmp_path, g1_profile, source, topic, relative, first
+):
+    def mutate(packets):
+        packet = _packet(source, topic, START + relative, {})
+        packet["context"] = False
+        packets.insert(3 if first else len(packets), packet)
+
+    path, _ = write_episode(tmp_path / "episode", mutate=mutate)
+    with pytest.raises(DomainError, match="outside the declared episode"):
+        load(path, g1_profile)
+
+
+def test_second_pre_start_manager_packet_is_rejected(tmp_path, g1_profile):
+    def mutate(packets):
+        for relative in (-1_000_000, -2_000_000):
+            packet = _packet("pico", "manager_state", START + relative, {})
+            packet["context"] = False
+            packets.insert(3, packet)
+
+    path, _ = write_episode(tmp_path / "episode", mutate=mutate)
+    with pytest.raises(DomainError, match="outside the declared episode"):
+        load(path, g1_profile)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

@@ -1,5 +1,7 @@
 # Unitree G1 Client：手柄采集与采集优先上传
 
+需要在 Client 前端启动控制程序、PICO 与完整数采服务时，使用新增的 [`g1_sonic_onboard` 适配模式](g1-onboard-client.md)。下文的 `g1_sonic` 仍只管理 raw subscriber。
+
 ## 范围与当前状态
 
 此实现绑定 `g1_brainco`、SONIC 1.1、BrainCo 与 `g1_sonic_raw_v1`。
@@ -15,7 +17,7 @@
 - Linux，`/proc` 可读，Python 提供 `os.pidfd_open`、`signal.pidfd_send_signal`，内核支持 pidfd。
 - 机器人侧已经安装带 raw-only、控制 Unix Socket、原子 `episode.json` 与 SHA-256 的采集器版本。
 - 机器人控制、PICO、相机服务由现场独立准备；默认订阅 `127.0.0.1:5555/5556/5557`。
-- **不要同时运行原有 all-in-one 数采启动器与 Client 管理的 raw recorder**。检测到已有 `run_data_exporter.py` 时拒绝启动第二个；Client 不会替你结束旧数采。
+- **不要同时运行两个 raw recorder**。默认检测到已有 `run_data_exporter.py` 时拒绝启动第二个；已运行的 raw recorder 可通过下面的显式配置接管。
 - Client 进程使用独立权限、磁盘与凭据，数据目录不得包含符号链接；只运行一个 Client 实例。
 
 复制并修改 [`configs/client.g1-sonic.json`](../../configs/client.g1-sonic.json)：
@@ -51,7 +53,7 @@ uv run --locked embodied-pipeline client --config configs/client.g1-sonic.json -
 6. 先用手柄保存当前段，等待原生采集器 idle，再点击“结束本批次采集”。只有受管 recorder 退出、最终 episode 核对成功后才放行后台处理。
 7. 资源稳定空闲后逐段校验并上传。重新进入批次会先撤销后台许可并等待现有后台任务让出，不会边采集边传历史 raw。
 
-HTTP 接口（沿用 Client 登录和权限）：
+HTTP 接口（Client 本地页面和设备内网不要求网页访问密钥）：
 
 - `POST /api/capture-batches`：与普通 capture 请求相同的任务/路径/幂等键字段。
 - `GET /api/capture-batches`：批次历史。
@@ -62,11 +64,21 @@ HTTP 接口（沿用 Client 登录和权限）：
 
 Client 关闭不会隐式结束录制。应优先按流程结束批次后再关闭；意外退出后需恢复确认。启动结果不明且尚未持久化进程身份时保持保守阻塞，需要人工核对，不提供一键强制清除状态。
 
+### 接管已有 raw 采集器
+
+在可信 Client 配置的 `capture.attach_existing` 中指定现有进程的 `pid`、`boot_id`、`process_identity`、`socket`、`output`。其中 `process_identity` 为 Linux `/proc/<pid>/stat` 的启动时间 tick，`boot_id` 来自 `/proc/sys/kernel/random/boot_id`；路径必须为无符号链接的绝对路径。
+
+进入采集批次时，G1 Adapter 核实同一用户、Python 环境、采集脚本、raw-only 参数、输出路径、手腕相机及 SONIC 1.1 / BrainCo 元数据，并检查 Socket 对端的 PID/UID；存在第二个采集器时仍然拒绝。现有输出与 Client 受管根需在同一文件系统，以沿用磁盘低水位检查。身份或格式不匹配不会回退为启动另一个进程。
+
+接管可以在 idle、录制、HOLD 或保存期间完成，只查询状态，不重放开始/暂停/停止命令。输出目录内已有的 episode 也会登记到当前批次，应使用与原任务一致的数据集名称和 instruction。同一输出目录只应接管一次，避免重新建批次重复登记历史 episode。
+
+接管后沿用现有批次规则：Client 重启恢复已登记身份；点击结束批次必须先保存到 idle，随后只结束该 raw subscriber 并核对 episode，才允许后台封存上传。配置绑定的是指定进程的一次生命周期；采集器退出或设备重启后需移除 `capture.attach_existing` 以恢复 Client 新建采集器，或重新核实并配置新的进程身份。
+
 ## Raw 封存与上传
 
 每段生成独立 Manifest，逻辑文件为 `episode0/packets.raw`、`episode0/episode.json` 和存在时的 `robot_config.json`。大 raw 通过受管源路径映射直接读取，不复制、不压缩、不转 HDF5。小元数据以快照封存；原始字节数、SHA-256 与文件身份变化都会检查。
 
-默认单后台工作租约、单文件分块读取，chunk 上限 1 MiB，校验与传输分别限速 5 MB/s（十进制）。上传暂停不计失败次数，恢复时查询 Server 字节 offset，重启也可续传；未完成文件 SHA-256 的中间状态只保留在当前进程中，重启需重算。后台不把整个 raw 读入内存。网络请求有超时，但现有在途请求不可瞬间撤销，进入下一批次会等待其结束并让出。
+默认单后台工作租约、单文件分块读取，chunk 上限 1 MiB，不设置应用层上传速率上限。上传暂停不计失败次数，恢复时查询 Server 字节 offset，重启也可续传；未完成文件 SHA-256 的中间状态只保留在当前进程中，重启需重算。后台不把整个 raw 读入内存。网络请求有超时，但现有在途请求不可瞬间撤销，进入下一批次会等待其结束并让出。资源繁忙保护仍然有效，它不是固定带宽限速。
 
 默认资源策略（Linux `/proc`）：
 

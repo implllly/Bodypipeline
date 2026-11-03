@@ -16,7 +16,7 @@ BodyPipeline 在机器人端提供 Web 数采工作台，在服务器端统一�
 
 Unitree G1（SONIC 1.1 / BrainCo）新增独立 raw subscriber 的 Client 适配：手柄 episode 自动同步、raw 原样封存、整批次采集优先的资源门控与断点上传。配置、限制和待现场验收项见 [G1 Client 使用说明](docs/robots/g1-client.md)；此适配不启动机器人控制服务，也不包含 G1 动作回放。
 
-数据回放统一位于 Client 工作台侧栏（`/#replay`），与采集共用登录和页面布局，直接操作当前机器人。Server 仅负责接收、转换、质检与预览，不再提供回放转发接口。
+数据回放统一位于 Client 工作台侧栏（`/#replay`），与采集共用页面布局，直接操作当前机器人。Client 本地页面不要求网页访问密钥；部署时应限制可信内网访问。Server 仅负责接收、转换、质检与预览，不再提供回放转发接口。
 
 | 能力 | 说明 |
 | --- | --- |
@@ -133,7 +133,7 @@ uv run --locked python scripts/demo.py
 | Server | <http://127.0.0.1:8081> | 数据导入、批量转换、质检与预览 |
 | Viewer | <http://127.0.0.1:8082/> | 常驻运行，通过“预览数据”打开数据集，使用 `PIPELINE_TOKEN` 登录 |
 
-首次启动会在 `.runtime/local-credentials.json` 生成三个权限为 `0600` 的随机密钥。使用其中的 `PIPELINE_TOKEN` 登录 Client、Server 与 Viewer；设备密钥和 Bridge 密钥不能用于网页登录。
+首次启动会在 `.runtime/local-credentials.json` 生成三个权限为 `0600` 的随机密钥。使用其中的 `PIPELINE_TOKEN` 登录 Server 与 Viewer；Client 页面不要求网页密钥，其设备上传仍使用独立的 `PIPELINE_DEVICE_TOKEN`。
 
 ### 3. 完成一次 Mock 采集
 

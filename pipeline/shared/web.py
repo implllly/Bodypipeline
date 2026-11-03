@@ -1,10 +1,10 @@
 from pathlib import Path
 from urllib.parse import urlencode
 
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 ASSETS = Path(__file__).resolve().parents[1] / "web"
-BASE_ASSETS = {"app.js", "annotations.js", "clipboard.js", "style.css", "theme.js", "theme.css", "client-replay.js"}
+BASE_ASSETS = {"app.js", "annotations.js", "clipboard.js", "style.css", "theme.js", "theme.css", "client-replay.js", "capture-service.js", "capture-telemetry.js", "preview-stream.js", "sonic-client.css", "sonic-client.js", "g1-onboard_collection.css", "g1-onboard_collection.js"}
 REPORT_ASSETS = {"report.js", "report.css"}
 
 
@@ -26,9 +26,14 @@ def themed_html(page: str) -> str:
     )
 
 
-def mount_ui(app, *, report=False, replay=False):
+def mount_ui(app, *, report=False, replay=False, index_page=None):
     @app.get("/")
     def index():
+        if index_page is not None:
+            return HTMLResponse(
+                index_page(),
+                headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+            )
         return FileResponse(ASSETS / "index.html")
 
     if report:

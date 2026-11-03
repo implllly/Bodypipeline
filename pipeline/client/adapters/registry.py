@@ -18,4 +18,8 @@ def create_adapter(settings, profile):
         from .g1_sonic import G1SonicAdapter
 
         return G1SonicAdapter(settings, profile)
+    if name == "g1_sonic_onboard" and settings.mode == "external":
+        from .g1_onboard import G1OnboardAdapter
+
+        return G1OnboardAdapter(settings, profile)
     raise DomainError("未知或不匹配的采集 Adapter / mode 绑定", 500)

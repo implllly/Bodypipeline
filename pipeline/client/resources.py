@@ -126,7 +126,6 @@ class BackgroundWork:
             "io_pressure_resume": 5,
             "memory_pressure_pause": 5,
             "memory_pressure_resume": 1,
-            "rate_bytes_per_second": 5_000_000,
             "chunk_bytes": 1024 * 1024,
             "network_pause_bytes_per_second": 20_000_000,
             "network_resume_bytes_per_second": 10_000_000,
@@ -292,8 +291,6 @@ class BackgroundWork:
                 self.hashes[key] = (identity, h, offset)
                 if progress:
                     progress(len(data))
-                if self.enabled:
-                    self.wait(len(data) / self.config["rate_bytes_per_second"])
         self.hashes.pop(key, None)
         return h.hexdigest()
 

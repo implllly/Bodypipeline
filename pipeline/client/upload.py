@@ -132,7 +132,6 @@ class UploadAgent:
                             )
                             if not data and offset < spec["size_bytes"]:
                                 raise DomainError("上传源提前结束")
-                            sent_at = time.monotonic()
                             result = call(
                                 "PUT",
                                 f"/device/uploads/{uid}/files/{i}",
@@ -148,14 +147,6 @@ class UploadAgent:
                             offset = result["offset"]
                             row["uploaded_bytes"] = done
                             self.service.update(row["id"], uploaded_bytes=done)
-                            if work.enabled:
-                                work.wait(
-                                    max(
-                                        0,
-                                        len(data) / work.config["rate_bytes_per_second"]
-                                        - (time.monotonic() - sent_at),
-                                    )
-                                )
                 for spec in manifest["files"]:
                     path = Path(
                         row.get("upload_sources", {}).get(

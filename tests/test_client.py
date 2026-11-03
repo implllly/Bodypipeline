@@ -95,26 +95,19 @@ def test_path_and_idempotency_guards(settings_factory):
             service.create(invalid)
 
 
-def test_cookie_auth_csrf_and_device_separation(settings_factory):
+def test_client_web_has_no_key_gate(settings_factory):
     s = settings_factory()
     with TestClient(create_app(s, background=False)) as http:
         assert http.get("/").status_code == 200
-        assert http.get("/api/config").status_code == 401
+        assert http.get("/api/config").status_code == 200
         assert (
             http.get(
                 "/api/config", headers={"Authorization": "Bearer " + s.device_token}
             ).status_code
-            == 401
+            == 200
         )
-        assert http.post("/api/login", json={"token": s.token}).status_code == 200
-        assert http.get("/api/config").status_code == 200
-        assert http.post("/api/captures", json=request()).status_code == 403
-        assert (
-            http.post(
-                "/api/captures", json=request(), headers={"Origin": "http://testserver"}
-            ).status_code
-            == 201
-        )
+        assert http.post("/api/login", json={"token": s.token}).status_code == 404
+        assert http.post("/api/captures", json=request()).status_code == 201
         assert http.get("/api/cameras/not-a-camera/frame").status_code == 404
         assert (
             http.get("/api/cameras/front/frame").headers["content-type"] == "image/jpeg"

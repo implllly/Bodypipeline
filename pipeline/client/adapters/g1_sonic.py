@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import os
 import signal
 import socket
+import stat
+import struct
 import subprocess
 import threading
 import time
@@ -118,6 +121,12 @@ class G1SonicAdapter:
         with socket.socket(socket.AF_UNIX) as sock:
             sock.settimeout(1)
             sock.connect(self.session["socket"])
+            if self.session.get("attached"):
+                peer = struct.unpack(
+                    "3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+                )
+                if peer[:2] != (self.session["pid"], os.getuid()):
+                    raise DomainError("已有采集器 Socket 的进程身份不匹配")
             sock.sendall(json.dumps({"action": action}).encode() + b"\n")
             response = b""
             while not response.endswith(b"\n"):
@@ -129,6 +138,103 @@ class G1SonicAdapter:
         if result.get("output") != self.session["output"]:
             raise DomainError("采集器输出目录与受管作业不匹配")
         return result
+
+    def _validate_attachment(self, session):
+        if not self._alive():
+            raise DomainError("指定的已有采集器已退出或进程身份不匹配")
+        proc = Path("/proc") / str(session["pid"])
+        if proc.stat().st_uid != os.getuid():
+            raise DomainError("只能接管当前用户的 raw 采集器")
+        command = (proc / "cmdline").read_bytes().decode().rstrip("\0").split("\0")
+        cwd = (proc / "cwd").resolve()
+        script = self.repo / "gear_sonic/scripts/run_data_exporter.py"
+        if (
+            len(command) < 2
+            or cwd != self.repo
+            or (proc / "exe").resolve() != self.python.resolve()
+            or (cwd / command[1]).resolve() != script.resolve()
+        ):
+            raise DomainError("已有采集器的程序或 Python 环境与可信配置不匹配")
+        parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+        parser.add_argument("--raw-only", action="store_true")
+        parser.add_argument("--record-wrist-cameras", action="store_true")
+        parser.add_argument("--root-output-dir", required=True)
+        parser.add_argument("--dataset-name", required=True)
+        parser.add_argument("--control-socket", required=True)
+        try:
+            options, _ = parser.parse_known_args(command[2:])
+        except SystemExit as exc:
+            raise DomainError("已有采集器缺少可接管的 raw/Socket 参数") from exc
+        output, control = Path(session["output"]), Path(session["socket"])
+        if (
+            not options.raw_only
+            or not output.is_absolute()
+            or output.resolve() != output
+            or not output.is_dir()
+            or (cwd / options.root_output_dir / options.dataset_name).resolve()
+            != output
+            or not control.is_absolute()
+            or control.resolve() != control
+            or (cwd / options.control_socket).resolve() != control
+            or not stat.S_ISSOCK(control.stat().st_mode)
+            or control.stat().st_uid != os.getuid()
+        ):
+            raise DomainError("已有采集器必须使用匹配的 raw 输出目录和控制 Socket")
+        if any(
+            c.get("mounting", "").startswith("wrist") for c in self.profile["cameras"]
+        ):
+            if not options.record_wrist_cameras:
+                raise DomainError("已有采集器未启用 Profile 所需的手腕相机")
+        config_path = output / "robot_config.json"
+        if config_path.resolve() != config_path:
+            raise DomainError("已有采集器 robot_config 不能是符号链接")
+        config = json.loads(config_path.read_text())
+        if (
+            config.get("hand_type") != "brainco"
+            or config.get("hand_num_motors") != 6
+            or config.get("hand_units") != "normalized"
+            or "sonic_v1_1" not in Path(config.get("model_path", "")).parts
+        ):
+            raise DomainError("已有采集器不匹配 SONIC 1.1 / BrainCo Profile")
+
+    def _attach_existing(self, batch, persist):
+        configured = self.config["attach_existing"]
+        if not isinstance(configured, dict):
+            raise DomainError("attach_existing 必须显式指定已有采集器身份和路径")
+        required = {"pid", "boot_id", "process_identity", "socket", "output"}
+        if not required.issubset(configured) or any(
+            not isinstance(configured[k], str) or not configured[k]
+            for k in required - {"pid"}
+        ):
+            raise DomainError("已有采集器归属记录不完整")
+        self.session = {k: configured[k] for k in required}
+        self.session["attached"] = True
+        try:
+            self._validate_attachment(self.session)
+            self._check_existing_collectors(exclude_pid=self.session["pid"])
+            status = self._request()
+            if status.get("state") not in {
+                "idle",
+                "recording",
+                "paused",
+                "need_to_save",
+            }:
+                raise DomainError("已有采集器状态不支持接管")
+            if status.get("output_format") != "raw" or status.get("error"):
+                raise DomainError("已有采集器未就绪或不是 raw 输出")
+            if not self._alive():
+                raise DomainError("已有采集器在核对期间退出")
+            root = Path(batch["raw_root"])
+            root.mkdir(parents=True, exist_ok=True)
+            if root.stat().st_dev != Path(self.session["output"]).stat().st_dev:
+                raise DomainError("接管目录与受管根必须在同一文件系统以保留磁盘低水位检查")
+        except Exception:
+            self.session = None
+            raise
+        # Persist ownership before background polling can observe this recorder.
+        self.launch_attempted = True
+        persist(dict(self.session))
+        return self.session
 
     def health(self):
         status = self.status()
@@ -159,6 +265,8 @@ class G1SonicAdapter:
         if self.session or self._alive():
             raise DomainError("已有采集器或待恢复作业")
         self.launch_attempted = False
+        if "attach_existing" in self.config:
+            return self._attach_existing(batch, persist)
         boot = boot_identity()  # Fail before launch if Linux ownership is unavailable.
         root = Path(batch["raw_root"])
         output = root / "native"
@@ -243,9 +351,11 @@ class G1SonicAdapter:
             time.sleep(0.1)
         raise DomainError("采集器启动结果未知，请检查进程和 recorder.log，不自动重试")
 
-    def _check_existing_collectors(self):
+    def _check_existing_collectors(self, exclude_pid=None):
         for directory in Path("/proc").iterdir():
             if directory.name.isdigit():
+                if int(directory.name) == exclude_pid:
+                    continue
                 try:
                     command = (directory / "cmdline").read_bytes()
                 except FileNotFoundError:

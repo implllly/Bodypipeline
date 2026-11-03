@@ -1,0 +1,18 @@
+.collection .collection-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.collection .collection-fields{margin:14px 0}
+.collection label{display:flex;flex-direction:column;gap:6px;flex:1;min-width:170px;color:var(--muted);font-size:12px}
+.collection .collection-prompt{flex:2;min-width:220px}
+.collection input{width:100%;min-width:0}
+.collection button:disabled{opacity:.45;cursor:not-allowed}
+.collection button:hover:not(:disabled){border-color:var(--ok)}
+.collection .collection-primary{background:#126750;border-color:#26886c}
+.collection .collection-danger{color:var(--bad);border-color:#884049}
+.collection .collection-badge{padding:6px 9px;border:1px solid var(--line);border-radius:5px;font-size:12px}
+.collection .collection-warning{color:#ffd166;border-color:#856b35}
+.collection .collection-episode{border-top:1px solid var(--line);margin-top:14px;padding-top:14px}
+.collection [data-field="output"]{overflow-wrap:anywhere;min-width:0}
+.collection [role="status"]{margin-top:10px}
+.collection .collection-error{color:var(--bad);font-size:13px;margin-top:6px}
+.collection .collection-depth{margin-bottom:14px}
+.collection .collection-depth label{flex:0 0 auto;flex-direction:row;align-items:center;min-width:0;font-size:14px;color:var(--text)}
+.collection .collection-depth input{width:auto}

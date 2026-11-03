@@ -25,7 +25,6 @@
     "idle_seconds": 20,
     "sample_seconds": 1,
     "chunk_bytes": 1048576,
-    "rate_bytes_per_second": 5000000,
     "memory_pause_ratio": 0.15,
     "memory_resume_ratio": 0.20,
     "io_pressure_pause": 20,

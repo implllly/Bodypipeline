@@ -9,6 +9,9 @@
     <script src="/assets/clipboard.js" defer></script>
     <link rel="stylesheet" href="/assets/theme.css" />
     <script src="/assets/client-replay.js" defer></script>
+    <script src="/assets/capture-service.js" defer></script>
+    <script src="/assets/capture-telemetry.js" defer></script>
+    <script src="/assets/preview-stream.js" defer></script>
     <script src="/assets/app.js" defer></script>
     <script src="/assets/annotations.js" defer></script>
   </head>
@@ -79,7 +82,7 @@
             <div class="online" id="health-label">检查服务状态…</div>
           </div>
           <div id="notice" role="status" hidden></div>
-          <section id="client-view" hidden>
+          <section id="client-view" class="sonic-workbench" hidden>
             <div class="warning" id="mock-warning">
               模拟模式：相机与关节数据由程序生成，不连接真实机器人。
             </div>
@@ -92,6 +95,7 @@
                   <div class="preview-controls"><label for="preview-quality" class="sr-only">预览画质</label><select id="preview-quality"><option value="low">省流预览 · 320px</option><option value="full">清晰预览 · 640px</option></select><button id="preview-toggle" class="secondary" type="button">暂停预览</button></div>
                 </div>
                 <p id="preview-note" class="panel-note small muted">预览独立于原始录制；弱网时可暂停</p>
+                <div id="sonic-sources" class="sonic-source-grid" aria-label="数据源状态"></div>
                 <div id="camera-grid" class="camera-grid"></div>
                 <div class="telemetry">
                   <div>
@@ -117,6 +121,18 @@
                   <input id="dataset-name" list="dataset-names" required maxlength="2000" autocomplete="off" placeholder="选择已有数据集，或输入新任务名称" />
                   <datalist id="dataset-names"></datalist>
                   <p id="capture-dataset-summary" class="small muted">同名任务的采集会持续加入同一数据集；训练 instruction 在 Server 转换时填写。</p>
+                  <div id="managed-capture-fields" hidden>
+                    <label for="capture-instruction">任务描述</label>
+                    <textarea id="capture-instruction" rows="3" autocomplete="off"></textarea>
+                    <div id="managed-capture-options" class="capture-options"></div>
+                    <div class="action-row">
+                      <button id="prepare-capture-service" class="secondary" type="button">启动基础服务</button>
+                      <button id="apply-capture-options" class="secondary" type="button">应用采集配置</button>
+                    </div>
+                    <p id="managed-service-status" class="small" role="status"></p>
+                    <div id="managed-source-status" class="action-row" aria-label="数据源状态"></div>
+                    <div id="managed-episode-actions" class="action-row"></div>
+                  </div>
                   <label for="local-root">本地存储 · 机器人文件系统</label
                   ><select id="local-root"></select>
                   <div class="path-hint" id="local-path"></div>
@@ -136,7 +152,7 @@
                   <button class="primary" id="start-button" type="submit">
                     ● 采集下一个 episode
                   </button>
-                  <p class="small muted">
+                  <p class="small muted" id="capture-safety-note">
                     采集服务不会启动机械臂。停止录制 ≠ 机器人急停。
                   </p>
                 </form>
@@ -144,6 +160,29 @@
                 <div id="external-batch-actions" hidden></div>
                 <p id="background-transfer-status" class="small muted"></p>
               </section>
+            <section id="sonic-signal-panel" class="panel sonic-signal-panel" hidden>
+              <div class="panel-heading">
+                <div>
+                  <h2>实时曲线</h2>
+                  <p id="capture-telemetry-summary" class="panel-note small muted">
+                    正在读取机器人数值信号…
+                  </p>
+                </div>
+                <span class="step">LIVE TELEMETRY</span>
+              </div>
+              <div class="sonic-signal-toolbar">
+                <label for="sonic-signal-search" class="sr-only">搜索遥测信号</label>
+                <input id="sonic-signal-search" placeholder="搜索 body_q、action、smpl、planner…" autocomplete="off" />
+                <button id="sonic-signal-clear" class="secondary" type="button">清空选择</button>
+              </div>
+              <div id="sonic-signal-list" class="sonic-signal-list" aria-label="遥测信号">
+                <span class="muted">等待数值信号…</span>
+              </div>
+              <div class="sonic-chart-wrap">
+                <canvas id="sonic-signal-chart" aria-label="机器人实时信号曲线"></canvas>
+              </div>
+              <p class="small muted">最多 16 条曲线；横轴为配置的历史窗口，纵轴自动缩放。曲线区域只读。</p>
+            </section>
             </div>
             <section class="panel">
               <div class="panel-heading"><h2>我的数据集</h2><span class="muted small">同一任务持续追加 episodes</span></div>
@@ -299,6 +338,8 @@
                   <p class="small muted">跳过的采集保留原始数据和原因；全部不合格时任务失败。工具或系统错误仍会终止任务。</p>
                   <label class="check-label" for="conversion-doctor"><input id="conversion-doctor" type="checkbox" checked />转换后自动运行 LeRobot Doctor</label>
                   <p class="small muted">自动质检仅生成质量报告，不改变转换结果。取消勾选时仅转换与结构验证，之后仍可直接预览或单独质检。</p>
+                  <label class="check-label" for="conversion-trim"><input id="conversion-trim" type="checkbox" />转换时自动删除首尾静止帧</label>
+                  <p class="small muted">检测每个 Episode 起点与终点的静止画面并同步裁剪所有相机视频；阈值来自机器人 Profile，整段静止的 Episode 始终保留。演示模式不可用。</p>
                   <div id="conversion-warning" class="warning" hidden></div>
                   <div class="conversion-submit"><button id="conversion-submit" class="primary" type="submit" disabled>提交批量转换</button><span id="conversion-help" class="small muted">请选择数据集并填写 instruction。</span></div>
                 </form>
@@ -326,6 +367,63 @@
                   <div id="version-conversion-warning" class="warning" hidden></div>
                   <div class="conversion-submit"><button id="version-conversion-submit" class="primary" type="submit" disabled>创建版本转换任务</button><span id="version-conversion-help" class="small muted">请选择一个可用的 LeRobot 数据集。</span></div>
                 </form>
+              </section>
+              <section class="panel">
+                <div class="panel-heading"><h2>删除首尾静止帧（所有机器人通用）</h2><span class="step">TRIM IDLE BOUNDARIES · ALL ROBOTS</span></div>
+                <p class="panel-note small muted">所有机器人通用的转换后处理选项：检测每个 Episode 起点与终点的静止画面，只删除首尾空闲帧并保留中间的停顿。来源数据集保持不变，输出是新的独立 LeRobot 数据集。运动阈值由机器人 Profile 提供，页面不按型号分支。</p>
+                <form id="trim-form" class="conversion-form">
+                  <div class="conversion-grid">
+                    <div>
+                      <label for="trim-source">选择已有数据集 <span class="required">*</span></label>
+                      <select id="trim-source" required disabled><option value="">请先选择机器人类型</option></select>
+                      <div id="trim-source-summary" class="source-summary small muted">选择已转换、已导入或已合并的 LeRobot v2.1 / v3.0 数据集。</div>
+                    </div>
+                    <div>
+                      <label for="trim-name">新数据集名称</label>
+                      <input id="trim-name" maxlength="2000" autocomplete="off" placeholder="默认在原名称后追加“· 首尾裁剪”" />
+                      <p class="small muted">留空时自动命名；来源数据集的帧数、视频和元数据不会被修改。</p>
+                    </div>
+                  </div>
+                  <div class="conversion-grid">
+                    <div>
+                      <label for="trim-idle">最少连续静止时长（秒）</label>
+                      <input id="trim-idle" type="number" min="0" max="60" step="0.1" />
+                    </div>
+                    <div>
+                      <label for="trim-active">最短持续运动时长（秒）</label>
+                      <input id="trim-active" type="number" min="0" max="60" step="0.1" />
+                    </div>
+                  </div>
+                  <div class="conversion-grid">
+                    <div>
+                      <label for="trim-padding-before">开头保留余量（秒）</label>
+                      <input id="trim-padding-before" type="number" min="0" max="60" step="0.1" />
+                    </div>
+                    <div>
+                      <label for="trim-padding-after">结尾保留余量（秒）</label>
+                      <input id="trim-padding-after" type="number" min="0" max="60" step="0.1" />
+                    </div>
+                  </div>
+                  <label class="check-label" for="trim-start"><input id="trim-start" type="checkbox" checked />删除开头静止帧</label>
+                  <label class="check-label" for="trim-end"><input id="trim-end" type="checkbox" checked />删除结尾静止帧</label>
+                  <label class="check-label" for="trim-static"><input id="trim-static" type="checkbox" />整段静止的 Episode 也删除（默认保留并标记）</label>
+                  <label class="check-label" for="trim-doctor"><input id="trim-doctor" type="checkbox" checked />裁剪后自动运行 LeRobot Doctor</label>
+                  <p class="small muted">执行前必须先预览：预览会列出每个 Episode 的保留范围与预计删除帧数，确认后才创建独立任务。检测和裁剪复用同一套算法。</p>
+                  <div id="trim-warning" class="warning" hidden></div>
+                  <div class="conversion-submit">
+                    <button id="trim-preview-submit" class="secondary" type="button" disabled>预览首尾静止帧</button>
+                    <button id="trim-submit" class="primary" type="submit" disabled>创建裁剪任务</button>
+                    <span id="trim-help" class="small muted">请选择数据集并预览检测结果。</span>
+                  </div>
+                </form>
+                <div id="trim-preview-panel" hidden>
+                  <div class="panel-heading"><h3>检测结果</h3><span id="trim-preview-state"></span></div>
+                  <div id="trim-preview-summary" class="small"></div>
+                  <div class="table-scroll"><table>
+                    <thead><tr><th>Episode</th><th>原始帧</th><th>保留范围</th><th>删除帧</th><th>状态</th></tr></thead>
+                    <tbody id="trim-preview-episodes"></tbody>
+                  </table></div>
+                </div>
               </section>
               <section class="panel">
                 <div class="panel-heading"><h2>转换任务与进度</h2><span class="step">PROCESSING QUEUE</span></div>

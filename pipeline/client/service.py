@@ -74,6 +74,11 @@ class CaptureService:
             "RECOVERY_REQUIRED",
         }:
             return "回放进行中或待恢复"
+        blocker = getattr(self.adapter, "background_blocker", None)
+        if blocker:
+            reason = blocker()
+            if reason:
+                return reason
         if self.capabilities.get("external_trigger"):
             # No filesystem-wide state scans in a per-chunk hot path. The batch
             # gate is cleared only after recorder exit and final reconciliation.
@@ -151,12 +156,16 @@ class CaptureService:
     def sync_external(self, final=False):
         if not self.capabilities.get("external_trigger"):
             return
+        refresh = getattr(self.adapter, "refresh_service", None)
+        if refresh and not final:
+            refresh()
         with self.batch_lock:
             batch = self.current_batch()
             if not batch:
                 return
             if not final and not batch.get("adapter_session"):
                 return  # Never turn a failed preflight/unknown launch into ACTIVE.
+            status = {}
             try:
                 observations = self.adapter.observe()
                 if final:
@@ -272,14 +281,29 @@ class CaptureService:
                     raise
             self.store.put("batch", batch["id"], batch)
 
-    def end_batch(self, bid):
+            if not final and batch.get("end_requested") and status.get("service_stopped"):
+                self.end_batch(batch["id"])
+
+    def end_batch(self, bid, force=False):
         with self.batch_lock:
             batch = self.store.get("batch", bid)
             if batch["state"] == "ENDED":
                 return batch
+            if force and not self.capabilities.get("force_end"):
+                raise DomainError("当前适配器不支持强制停止服务", 400)
             try:
                 if batch.get("adapter_session"):
-                    self.adapter.end()
+                    if self.capabilities.get("service_control"):
+                        batch["end_requested"] = True
+                        batch["force_end"] = force or batch.get("force_end", False)
+                        complete = self.adapter.end(force=batch["force_end"])
+                        batch["adapter_session"] = dict(self.adapter.session)
+                        if complete is False:
+                            batch.update(state="STOPPING", error=None)
+                            self.store.put("batch", bid, batch)
+                            return batch
+                    else:
+                        self.adapter.end()
                     # Reattach the persisted paths only for final reconciliation.
                     self.adapter.recover(batch)
                     self.sync_external(final=True)
@@ -303,10 +327,47 @@ class CaptureService:
                 batch.update(state="ENDED", ended_at=now(), error=None)
             except Exception as exc:
                 batch.update(state="RECOVERY_REQUIRED", error=str(exc))
+                if self.capabilities.get("service_control") and self.adapter.session:
+                    batch["adapter_session"] = dict(self.adapter.session)
             self.store.put("batch", bid, batch)
             if batch["state"] == "ENDED":
                 self.batch_active.clear()
             return batch
+
+    def capture_service_status(self):
+        if not self.capabilities.get("service_control"):
+            raise DomainError("当前适配器未提供数采服务控制", 400)
+        return self.adapter.service_status()
+
+    def prepare_capture_service(self):
+        with self.batch_lock:
+            if self.current_batch():
+                raise DomainError("请先结束当前采集批次")
+            if getattr(self, "replay", None) and self.replay.row["state"] in {
+                "PREPARING", "RUNNING", "STOPPING", "RECOVERY_REQUIRED",
+            }:
+                raise DomainError("请先结束回放")
+            self.capture_service_status()
+            return self.adapter.prepare_service()
+
+    def configure_capture_service(self, options):
+        with self.batch_lock:
+            if self.current_batch():
+                raise DomainError("请先结束当前采集批次")
+            self.capture_service_status()
+            return self.adapter.configure_service(options)
+
+    def batch_command(self, bid, action, request_id):
+        with self.batch_lock:
+            batch = self.current_batch()
+            if not batch or batch["id"] != bid or batch["state"] == "STOPPING":
+                raise DomainError("当前采集批次不接受录制指令")
+            commands = {item["id"] for item in self.capabilities.get("episode_commands", [])}
+            if action not in commands:
+                raise DomainError("当前适配器不支持此录制指令", 400)
+            result = self.adapter.command(action, request_id)
+            self.sync_external()
+            return result
 
     def recover(self):
         for row in self.store.all("capture"):
@@ -345,6 +406,13 @@ class CaptureService:
         return row
 
     def create(self, body):
+        options = body.get("capture_options", {})
+        declared = {
+            option["id"]
+            for option in self.capabilities.get("service_control", {}).get("options", [])
+        }
+        if set(options) - declared:
+            raise DomainError("当前适配器不支持请求的采集配置", 400)
         with self.lock:
             key = body["idempotency_key"]
             payload_hash = digest(
@@ -402,6 +470,10 @@ class CaptureService:
                 "upload_state": "NONE",
                 "created_at": now(),
                 "instruction": body.get("instruction", ""),
+                **(
+                    {"capture_options": body["capture_options"]}
+                    if body.get("capture_options") else {}
+                ),
                 "local_root": root_id,
                 "local_prefix": prefix,
                 "raw_root": str(raw),

@@ -186,6 +186,13 @@ def install_security(app: FastAPI, settings, device_prefix: str | None = None):
                 "/assets/app.js",
                 "/assets/annotations.js",
                 "/assets/client-replay.js",
+                "/assets/capture-service.js",
+                "/assets/capture-telemetry.js",
+                "/assets/preview-stream.js",
+                "/assets/sonic-client.css",
+                "/assets/sonic-client.js",
+                "/assets/g1-onboard_collection.css",
+                "/assets/g1-onboard_collection.js",
                 "/assets/clipboard.js",
                 "/assets/theme.js",
                 "/assets/theme.css",
@@ -199,7 +206,12 @@ def install_security(app: FastAPI, settings, device_prefix: str | None = None):
             )
             or (settings.role == "client" and p == "/replay")
         )
-        if public and settings.role != "viewer":
+        if settings.role == "client":
+            # Client is intentionally open on its trusted robot network. The
+            # device token is still required separately when this Client calls
+            # the Server upload API.
+            response = await call_next(request)
+        elif public and settings.role != "viewer":
             response = await call_next(request)
         else:
             authorised, cookie_only = credentials(request)
@@ -217,15 +229,31 @@ def install_security(app: FastAPI, settings, device_prefix: str | None = None):
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
         if settings.role != "viewer":
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; img-src 'self' blob: data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'"
-            )
+            if p == "/capture-visualizer/" or (
+                p == "/" and getattr(app.state, "native_client_page", False)
+            ):
+                # The trusted upstream visualizer keeps its original inline
+                # bootstrap and styles. In native-client mode it is the document
+                # itself, with Client APIs still protected by this middleware.
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; img-src 'self' blob: data:; "
+                    "script-src 'self' 'unsafe-inline'; "
+                    "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+                )
+            else:
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; img-src 'self' blob: data:; "
+                    "script-src 'self'; style-src 'self'; "
+                    "frame-ancestors 'none'"
+                )
         return response
 
     attempts = {}
 
     @app.post("/api/login")
     async def login(request: Request):
+        if settings.role == "client":
+            raise DomainError("Client 未启用密钥登录", 404)
         # Do not expose credentials in URLs, logs, localStorage, or HTML.
         from json import JSONDecodeError, loads
 
@@ -274,6 +302,8 @@ def install_security(app: FastAPI, settings, device_prefix: str | None = None):
 
     @app.post("/api/logout")
     def logout():
+        if settings.role == "client":
+            raise DomainError("Client 未启用密钥登录", 404)
         response = JSONResponse({"ok": True})
         response.delete_cookie(cookie_name)
         return response

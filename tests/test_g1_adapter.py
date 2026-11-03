@@ -4,6 +4,9 @@ import copy
 import json
 import os
 import signal
+import socket
+import struct
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -254,3 +257,152 @@ def test_incomplete_ownership_record_never_releases_recorder(adapter):
     adapter.session.pop("boot_id")
     with pytest.raises(DomainError, match="归属记录不完整"):
         adapter.end()
+
+
+@pytest.fixture
+def attachable(adapter, tmp_path, monkeypatch):
+    session = dict(adapter.session)
+    adapter.release()
+    with tempfile.TemporaryDirectory(prefix="g1-attach-", dir="/tmp") as directory:
+        control = Path(directory).resolve() / "control.sock"
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.bind(str(control))
+            session["socket"] = str(control)
+            adapter.config["attach_existing"] = session
+            proc_root = tmp_path / "proc"
+            proc = proc_root / str(session["pid"])
+            proc.mkdir(parents=True)
+            (proc / "cwd").symlink_to(adapter.repo)
+            (proc / "exe").symlink_to(adapter.python)
+            command = [
+                str(adapter.python),
+                "gear_sonic/scripts/run_data_exporter.py",
+                "--raw-only",
+                "--record-wrist-cameras",
+                "--root-output-dir",
+                str(Path(session["output"]).parent),
+                "--dataset-name",
+                Path(session["output"]).name,
+                "--control-socket",
+                session["socket"],
+            ]
+            (proc / "cmdline").write_bytes("\0".join(command).encode() + b"\0")
+            atomic_json(
+                Path(session["output"]) / "robot_config.json",
+                {
+                    "hand_type": "brainco",
+                    "hand_num_motors": 6,
+                    "hand_units": "normalized",
+                    "model_path": "policy/sonic_v1_1/model_decoder.onnx",
+                },
+            )
+            monkeypatch.setattr(
+                module,
+                "Path",
+                lambda *args: proc_root if args == ("/proc",) else Path(*args),
+            )
+            monkeypatch.setattr(
+                adapter,
+                "_request",
+                lambda: {"state": "recording", "output_format": "raw"},
+            )
+            yield adapter, session, proc, command
+
+
+def test_attach_live_recording_persists_identity_without_start_or_stop(
+    attachable, monkeypatch
+):
+    adapter, session, _, _ = attachable
+    launch = Mock(side_effect=AssertionError("must reuse existing recorder"))
+    monkeypatch.setattr(module.subprocess, "Popen", launch)
+    monkeypatch.setattr(
+        adapter, "_terminate", Mock(side_effect=AssertionError("must not stop"))
+    )
+    persist = Mock()
+    root = adapter.settings.root / "raw"
+    result = adapter.begin({"raw_root": str(root)}, persist)
+    assert root.is_dir()
+    assert result == {**session, "attached": True}
+    persist.assert_called_once_with(result)
+    assert adapter.launch_attempted and not launch.called
+    adapter.close()
+    adapter.release()
+    adapter.recover({"adapter_session": result})
+    assert adapter.session == result and adapter._alive()
+
+
+@pytest.mark.parametrize(
+    "change", ["boot", "identity", "raw", "socket", "python", "profile", "state"]
+)
+def test_attach_rejects_mismatched_process_format_and_profile(
+    attachable, monkeypatch, change
+):
+    adapter, session, proc, command = attachable
+    if change == "boot":
+        session["boot_id"] = "old-boot"
+    elif change == "identity":
+        session["process_identity"] = "old-process"
+    elif change == "raw":
+        command.remove("--raw-only")
+    elif change == "socket":
+        command[-1] = "/other.sock"
+    elif change == "python":
+        (proc / "exe").unlink()
+        (proc / "exe").symlink_to(adapter.repo)
+    elif change == "profile":
+        atomic_json(
+            Path(session["output"]) / "robot_config.json", {"hand_type": "other"}
+        )
+    else:
+        monkeypatch.setattr(
+            adapter, "_request", lambda: {"state": "unknown", "output_format": "raw"}
+        )
+    (proc / "cmdline").write_bytes("\0".join(command).encode() + b"\0")
+    persist = Mock()
+    with pytest.raises(DomainError):
+        adapter.begin({}, persist)
+    assert (
+        not persist.called and adapter.session is None and not adapter.launch_attempted
+    )
+
+
+def test_attach_does_not_ignore_another_collector(attachable):
+    adapter, _, proc, _ = attachable
+    second = proc.parent / "123456"
+    second.mkdir()
+    (second / "cmdline").write_bytes(b"python\0run_data_exporter.py\0")
+    with pytest.raises(DomainError, match="第二个"):
+        adapter.begin({}, Mock())
+    assert adapter.session is None
+
+
+def test_failed_attachment_persistence_keeps_recoverable_identity(attachable):
+    adapter, session, _, _ = attachable
+    with pytest.raises(OSError, match="disk"):
+        adapter.begin(
+            {"raw_root": str(adapter.settings.root / "raw")},
+            Mock(side_effect=OSError("disk")),
+        )
+    assert adapter.session == {**session, "attached": True}
+    assert adapter.launch_attempted
+
+
+def test_attached_socket_must_belong_to_the_pinned_recorder(adapter, monkeypatch):
+    adapter.session["attached"] = True
+    sock = Mock()
+    sock.__enter__ = Mock(return_value=sock)
+    sock.__exit__ = Mock(return_value=False)
+    sock.getsockopt.return_value = struct.pack("3i", 1, os.getuid(), os.getgid())
+    monkeypatch.setattr(module.socket, "SO_PEERCRED", 17, raising=False)
+    monkeypatch.setattr(module.socket, "socket", Mock(return_value=sock))
+    with pytest.raises(DomainError, match="Socket.*身份"):
+        adapter._request()
+    sock.sendall.assert_not_called()
+    sock.getsockopt.return_value = struct.pack(
+        "3i", adapter.session["pid"], os.getuid(), os.getgid()
+    )
+    sock.recv.return_value = (
+        json.dumps({"state": "recording", "output": adapter.session["output"]}).encode()
+        + b"\n"
+    )
+    assert adapter._request()["state"] == "recording"

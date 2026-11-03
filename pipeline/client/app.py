@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import io
+import secrets
+import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI
-from fastapi.responses import Response
+from anyio import CancelScope
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from pipeline.shared.core import DomainError, ProcessLock
 from pipeline.shared.security import install_security
@@ -29,6 +32,23 @@ class CaptureRequest(BaseModel):
     local_prefix: str = ""
     remote_target: str = "default"
     remote_prefix: str = ""
+    capture_options: dict[str, StrictBool] = Field(default_factory=dict)
+
+
+class CaptureOptionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    options: dict[str, StrictBool]
+
+
+class EpisodeCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(min_length=1, max_length=32)
+    request_id: str = Field(min_length=8, max_length=64)
+
+
+class EndBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    force: bool = False
 
 
 class ReplayRequest(BaseModel):
@@ -36,6 +56,42 @@ class ReplayRequest(BaseModel):
     root: str
     path: str
     request_id: str = Field(min_length=8, max_length=128)
+
+
+class NativeCollectionChallengeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["start", "stop"]
+
+
+class NativeCollectionDatasetRequest(BaseModel):
+    # The upstream component includes raw_only/camera_depth in its read-only
+    # dataset preflight even though the native server ignores those fields.
+    model_config = ConfigDict(extra="ignore")
+    subdirectory: str = Field(default="", max_length=64)
+    dataset_name: str = Field(min_length=1, max_length=64)
+    task_prompt: str = Field(min_length=1, max_length=400)
+
+
+class NativeCollectionStartRequest(NativeCollectionDatasetRequest):
+    raw_only: StrictBool
+    camera_depth: StrictBool
+    nonce: str = Field(min_length=8, max_length=128)
+    resume_dataset: bool = False
+
+
+class NativeCollectionStopRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    nonce: str = Field(min_length=8, max_length=128)
+
+
+class NativeCollectionEpisodeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str = Field(min_length=8, max_length=64)
+
+
+class NativeCollectionCameraDepthRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    depth: StrictBool
 
 
 def create_app(settings, background=True):
@@ -114,8 +170,13 @@ def create_app(settings, background=True):
     app.state.service = service
     app.state.replay = replay
     app.state.uploader = uploader
+    native_client_page = getattr(
+        service.adapter, "native_client_html", None
+    )
+    app.state.native_client_page = callable(native_client_page)
     install_security(app, settings)
-    mount_ui(app, replay=True)
+    mount_ui(app, replay=True, index_page=native_client_page)
+    native_challenges = {}
 
     @app.get("/api/replay/status")
     def replay_status():
@@ -171,6 +232,158 @@ def create_app(settings, background=True):
     def batches():
         return service.store.all("batch")
 
+    @app.get("/api/capture-service")
+    def capture_service():
+        return service.capture_service_status()
+
+    @app.get("/capture-visualizer/", response_class=HTMLResponse)
+    def native_capture_visualizer():
+        reader = getattr(service.adapter, "native_visualizer_html", None)
+        if reader is None:
+            raise DomainError("当前 Adapter 未提供原生可视化页面", 404)
+        return HTMLResponse(
+            reader(),
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/capture-visualizer/api/status")
+    def native_visualizer_status():
+        reader = getattr(service.adapter, "telemetry_status", None)
+        if reader is None:
+            raise DomainError("当前 Adapter 未配置采集遥测", 501)
+        return reader()
+
+    @app.get("/capture-visualizer/api/signals")
+    def native_visualizer_signals():
+        return capture_telemetry_signals()
+
+    @app.get("/capture-visualizer/api/history")
+    def native_visualizer_history(signal: list[str] = Query(default=[])):
+        return capture_telemetry_history(signal)
+
+    if callable(native_client_page):
+
+        def consume_native_challenge(nonce, operation):
+            now = time.monotonic()
+            for key, value in list(native_challenges.items()):
+                if value[1] <= now:
+                    native_challenges.pop(key, None)
+            challenge = native_challenges.pop(nonce, None)
+            if challenge is None or challenge[0] != operation or challenge[1] <= now:
+                raise DomainError("采集操作确认已失效，请重新操作", 409)
+
+        @app.get("/capture-visualizer/api/collection/status")
+        def native_collection_status():
+            return service.capture_service_status()
+
+        @app.post("/capture-visualizer/api/collection/dataset")
+        def native_collection_dataset(body: NativeCollectionDatasetRequest):
+            reader = getattr(service.adapter, "collection_dataset", None)
+            if reader is None:
+                raise DomainError("当前 Adapter 未提供数据集预检", 501)
+            return reader(body.model_dump())
+
+        @app.post("/capture-visualizer/api/collection/challenge")
+        def native_collection_challenge(body: NativeCollectionChallengeRequest):
+            nonce = secrets.token_urlsafe(24)
+            native_challenges[nonce] = (body.operation, time.monotonic() + 30)
+            return {"nonce": nonce}
+
+        @app.post("/capture-visualizer/api/collection/start")
+        def native_collection_start(body: NativeCollectionStartRequest):
+            consume_native_challenge(body.nonce, "start")
+            if body.raw_only is not True:
+                raise DomainError(
+                    "BodyPipeline Client 仅支持保存 Raw，再由 Server 转换", 400
+                )
+            roots = list(service.roots)
+            if not roots:
+                raise DomainError("Client 未配置本地采集目录", 500)
+            result = service.begin_batch(
+                {
+                    "dataset_name": body.dataset_name,
+                    "instruction": body.task_prompt,
+                    "idempotency_key": body.nonce,
+                    "local_root": roots[0],
+                    "local_prefix": body.subdirectory,
+                    "remote_target": "default",
+                    "remote_prefix": "",
+                    "capture_options": {
+                        "raw_only": True,
+                        "camera_depth": body.camera_depth,
+                    },
+                }
+            )
+            if result.get("state") != "ACTIVE":
+                raise DomainError(
+                    result.get("error") or "采集批次未进入活动状态", 409
+                )
+            return service.capture_service_status()
+
+        @app.post("/capture-visualizer/api/collection/stop")
+        def native_collection_stop(body: NativeCollectionStopRequest):
+            consume_native_challenge(body.nonce, "stop")
+            batch = service.current_batch()
+            if batch is None:
+                raise DomainError("当前没有活动采集批次", 409)
+            service.end_batch(batch["id"], force=True)
+            return service.capture_service_status()
+
+        @app.post("/capture-visualizer/api/collection/camera-depth")
+        def native_collection_camera_depth(
+            body: NativeCollectionCameraDepthRequest,
+        ):
+            state = service.configure_capture_service(
+                {"raw_only": True, "camera_depth": body.depth}
+            )
+            return state.get("camera", state)
+
+        @app.post("/capture-visualizer/api/collection/episodes/{action}")
+        def native_collection_episode(
+            action: Literal["start", "stop", "discard"],
+            body: NativeCollectionEpisodeRequest,
+        ):
+            batch = service.current_batch()
+            if batch is None:
+                raise DomainError("当前没有活动采集批次", 409)
+            return service.batch_command(batch["id"], action, body.request_id)
+
+    @app.post("/api/capture-service/prepare")
+    def prepare_capture_service():
+        return service.prepare_capture_service()
+
+    @app.patch("/api/capture-service/options")
+    def configure_capture_service(body: CaptureOptionsRequest):
+        return service.configure_capture_service(body.options)
+
+    @app.get("/api/capture-telemetry/signals")
+    def capture_telemetry_signals():
+        telemetry = service.capabilities.get("telemetry")
+        reader = getattr(service.adapter, "telemetry_signals", None)
+        if not telemetry or reader is None:
+            raise DomainError("当前 Adapter 未配置采集遥测", 501)
+        return reader()
+
+    @app.get("/api/capture-telemetry/history")
+    def capture_telemetry_history(signal: list[str] = Query(default=[])):
+        telemetry = service.capabilities.get("telemetry")
+        reader = getattr(service.adapter, "telemetry_history", None)
+        if not telemetry or reader is None:
+            raise DomainError("当前 Adapter 未配置采集遥测", 501)
+        maximum = telemetry.get("max_signals", 16)
+        if (
+            not signal
+            or len(signal) > maximum
+            or len(set(signal)) != len(signal)
+            or any(not item or len(item) > 240 for item in signal)
+        ):
+            raise DomainError(f"请选择 1-{maximum} 个不同的遥测信号", 400)
+        return reader(signal)
+
+    @app.post("/api/capture-batches/{bid}/commands")
+    def batch_command(bid: str, body: EpisodeCommandRequest):
+        return service.batch_command(bid, body.action, body.request_id)
+
     @app.post("/api/capture-batches", status_code=201)
     def begin_batch(body: CaptureRequest):
         data = body.model_dump(exclude_none=True)
@@ -182,8 +395,8 @@ def create_app(settings, background=True):
         return service.begin_batch(data)
 
     @app.post("/api/capture-batches/{bid}/end")
-    def end_batch(bid: str):
-        return service.end_batch(bid)
+    def end_batch(bid: str, body: EndBatchRequest | None = None):
+        return service.end_batch(bid, force=bool(body and body.force))
 
     @app.get("/api/targets")
     def targets():
@@ -264,6 +477,49 @@ def create_app(settings, background=True):
                 raise DomainError("只有等待重试的上传可以重排队")
             row.update(upload_state="QUEUED", retry_at=0)
             return service.save(row)
+
+    @app.get("/api/cameras/{camera_id}/stream")
+    async def camera_stream(camera_id: str):
+        if camera_id not in {c["id"] for c in service.profile["cameras"]}:
+            raise DomainError("相机不存在", 404)
+        opener = getattr(service.adapter, "open_preview", None)
+        if not service.capabilities.get("preview_stream") or opener is None:
+            raise DomainError("当前 Adapter 未配置连续相机预览", 501)
+        context = opener(camera_id)
+        source = await context.__aenter__()
+
+        async def chunks():
+            try:
+                async for chunk in source.chunks:
+                    yield chunk
+            except (httpx.HTTPError, DomainError):
+                # Headers have already been sent; closing lets the UI reconnect.
+                return
+            finally:
+                with CancelScope(shield=True):
+                    await context.__aexit__(None, None, None)
+
+        return StreamingResponse(
+            chunks(), media_type=source.content_type,
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/capture-visualizer/api/camera/{filename}")
+    async def native_camera_stream(filename: str):
+        if not filename.endswith(".mjpg"):
+            raise DomainError("原生相机流路径无效", 404)
+        source_key = filename.removesuffix(".mjpg")
+        camera = next(
+            (
+                item
+                for item in service.profile["cameras"]
+                if item.get("source_key") == source_key
+            ),
+            None,
+        )
+        if camera is None:
+            raise DomainError("相机不存在", 404)
+        return await camera_stream(camera["id"])
 
     @app.get("/api/cameras/{camera_id}/frame")
     def frame(camera_id: str, preview: Literal["full", "low"] = "full"):

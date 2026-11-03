@@ -159,13 +159,9 @@ def test_api_auth_and_ui(replay_setup):
         assert redirect.status_code == 307
         assert redirect.headers["location"] == "/#replay?capture=record-123"
         assert app.state.replay.status()["state"] == "IDLE"
-        assert http.get("/api/replay/status").status_code == 401
-        http.post("/api/login", json={"token": settings.token})
+        assert http.get("/api/replay/status").status_code == 200
         payload = dict(root="data", path=path.name, request_id="request-001")
-        assert http.post("/api/replay/start", json=payload).status_code == 403
-        response = http.post(
-            "/api/replay/start", json=payload, headers={"Origin": "http://testserver"}
-        )
+        response = http.post("/api/replay/start", json=payload)
         assert response.status_code == 202
         assert wait(app.state.replay)["state"] == "COMPLETED"
 
