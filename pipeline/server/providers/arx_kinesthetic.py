@@ -19,6 +19,7 @@ from ..conversion_options import normalize_options
 from ..episode_validation import EpisodeValidationError
 from ..quality import robot_profile_blockers, robot_quality, validate_robot_policy
 from .aloha_hdf5 import AlohaHDF5Provider
+from .base import configured_trim_policy
 from .gripper_closure import capabilities, correct_actions
 from .hdf5_images import copy_images, inspect_images
 from .hdf5_preset import write_hdf5_preset
@@ -540,6 +541,9 @@ class ARXKinestheticProvider(AlohaHDF5Provider):
             "action_valid_mask": VALID_ACTION_MASK,
             "asynchronous_policy": "masked_after_250ms",
         }
+
+    def stationary_trim_policy(self, profile: dict) -> dict:
+        return configured_trim_policy(profile)
 
     def analysis_context(self, profile: dict) -> dict:
         return {

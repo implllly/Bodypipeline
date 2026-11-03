@@ -26,6 +26,33 @@ def annotation_rig(profile: dict) -> str:
     return rig
 
 
+def configured_trim_policy(profile: dict) -> dict:
+    """Read the optional trusted ``trim`` block a Profile may declare.
+
+    Providers whose data needs different signal semantics or thresholds override
+    this method; the Server never guesses them from the robot model.
+    """
+
+    config = profile.get("trim")
+    if not isinstance(config, dict):
+        return {}
+    allowed = (
+        "feature",
+        "candidate_features",
+        "unit_thresholds",
+        "default_threshold",
+        "threshold_per_frame",
+        "trim_start",
+        "trim_end",
+        "min_idle_seconds",
+        "min_active_seconds",
+        "padding_before_seconds",
+        "padding_after_seconds",
+        "remove_fully_static",
+    )
+    return {key: config[key] for key in allowed if key in config}
+
+
 class RobotProvider(Protocol):
     """Robot-specific conversion boundary.
 
@@ -102,10 +129,20 @@ class RobotProvider(Protocol):
         """
         return {"rig": annotation_rig(profile), "cameras": {}}
 
+    def stationary_trim_policy(self, profile: dict) -> dict:
+        """Trusted idle-frame detection configuration, or ``{}`` to use units.
+
+        Boundary trimming must compare movement in the signal that actually
+        reflects the robot's motion. A Profile whose action is a velocity or a
+        motion token declares that here instead of letting the Server infer it.
+        """
+        return configured_trim_policy(profile)
+
 
 __all__ = [
     "ANNOTATION_RIGS",
     "RobotProvider",
     "RobotRuntime",
     "annotation_rig",
+    "configured_trim_policy",
 ]

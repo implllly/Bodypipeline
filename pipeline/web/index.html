@@ -297,6 +297,8 @@
                   <p class="small muted">跳过的采集保留原始数据和原因；全部不合格时任务失败。工具或系统错误仍会终止任务。</p>
                   <label class="check-label" for="conversion-doctor"><input id="conversion-doctor" type="checkbox" checked />转换后自动运行 LeRobot Doctor</label>
                   <p class="small muted">自动质检仅生成质量报告，不改变转换结果。取消勾选时仅转换与结构验证，之后仍可直接预览或单独质检。</p>
+                  <label class="check-label" for="conversion-trim"><input id="conversion-trim" type="checkbox" />转换时自动删除首尾静止帧</label>
+                  <p class="small muted">检测每个 Episode 起点与终点的静止画面并同步裁剪所有相机视频；阈值来自机器人 Profile，整段静止的 Episode 始终保留。演示模式不可用。</p>
                   <div id="conversion-warning" class="warning" hidden></div>
                   <div class="conversion-submit"><button id="conversion-submit" class="primary" type="submit" disabled>提交批量转换</button><span id="conversion-help" class="small muted">请选择数据集并填写 instruction。</span></div>
                 </form>
@@ -324,6 +326,63 @@
                   <div id="version-conversion-warning" class="warning" hidden></div>
                   <div class="conversion-submit"><button id="version-conversion-submit" class="primary" type="submit" disabled>创建版本转换任务</button><span id="version-conversion-help" class="small muted">请选择一个可用的 LeRobot 数据集。</span></div>
                 </form>
+              </section>
+              <section class="panel">
+                <div class="panel-heading"><h2>删除首尾静止帧（所有机器人通用）</h2><span class="step">TRIM IDLE BOUNDARIES · ALL ROBOTS</span></div>
+                <p class="panel-note small muted">所有机器人通用的转换后处理选项：检测每个 Episode 起点与终点的静止画面，只删除首尾空闲帧并保留中间的停顿。来源数据集保持不变，输出是新的独立 LeRobot 数据集。运动阈值由机器人 Profile 提供，页面不按型号分支。</p>
+                <form id="trim-form" class="conversion-form">
+                  <div class="conversion-grid">
+                    <div>
+                      <label for="trim-source">选择已有数据集 <span class="required">*</span></label>
+                      <select id="trim-source" required disabled><option value="">请先选择机器人类型</option></select>
+                      <div id="trim-source-summary" class="source-summary small muted">选择已转换、已导入或已合并的 LeRobot v2.1 / v3.0 数据集。</div>
+                    </div>
+                    <div>
+                      <label for="trim-name">新数据集名称</label>
+                      <input id="trim-name" maxlength="2000" autocomplete="off" placeholder="默认在原名称后追加“· 首尾裁剪”" />
+                      <p class="small muted">留空时自动命名；来源数据集的帧数、视频和元数据不会被修改。</p>
+                    </div>
+                  </div>
+                  <div class="conversion-grid">
+                    <div>
+                      <label for="trim-idle">最少连续静止时长（秒）</label>
+                      <input id="trim-idle" type="number" min="0" max="60" step="0.1" />
+                    </div>
+                    <div>
+                      <label for="trim-active">最短持续运动时长（秒）</label>
+                      <input id="trim-active" type="number" min="0" max="60" step="0.1" />
+                    </div>
+                  </div>
+                  <div class="conversion-grid">
+                    <div>
+                      <label for="trim-padding-before">开头保留余量（秒）</label>
+                      <input id="trim-padding-before" type="number" min="0" max="60" step="0.1" />
+                    </div>
+                    <div>
+                      <label for="trim-padding-after">结尾保留余量（秒）</label>
+                      <input id="trim-padding-after" type="number" min="0" max="60" step="0.1" />
+                    </div>
+                  </div>
+                  <label class="check-label" for="trim-start"><input id="trim-start" type="checkbox" checked />删除开头静止帧</label>
+                  <label class="check-label" for="trim-end"><input id="trim-end" type="checkbox" checked />删除结尾静止帧</label>
+                  <label class="check-label" for="trim-static"><input id="trim-static" type="checkbox" />整段静止的 Episode 也删除（默认保留并标记）</label>
+                  <label class="check-label" for="trim-doctor"><input id="trim-doctor" type="checkbox" checked />裁剪后自动运行 LeRobot Doctor</label>
+                  <p class="small muted">执行前必须先预览：预览会列出每个 Episode 的保留范围与预计删除帧数，确认后才创建独立任务。检测和裁剪复用同一套算法。</p>
+                  <div id="trim-warning" class="warning" hidden></div>
+                  <div class="conversion-submit">
+                    <button id="trim-preview-submit" class="secondary" type="button" disabled>预览首尾静止帧</button>
+                    <button id="trim-submit" class="primary" type="submit" disabled>创建裁剪任务</button>
+                    <span id="trim-help" class="small muted">请选择数据集并预览检测结果。</span>
+                  </div>
+                </form>
+                <div id="trim-preview-panel" hidden>
+                  <div class="panel-heading"><h3>检测结果</h3><span id="trim-preview-state"></span></div>
+                  <div id="trim-preview-summary" class="small"></div>
+                  <div class="table-scroll"><table>
+                    <thead><tr><th>Episode</th><th>原始帧</th><th>保留范围</th><th>删除帧</th><th>状态</th></tr></thead>
+                    <tbody id="trim-preview-episodes"></tbody>
+                  </table></div>
+                </div>
               </section>
               <section class="panel">
                 <div class="panel-heading"><h2>转换任务与进度</h2><span class="step">PROCESSING QUEUE</span></div>

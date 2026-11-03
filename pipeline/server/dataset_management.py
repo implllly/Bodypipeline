@@ -222,7 +222,7 @@ class DatasetManager:
                 job["id"] in job_ids or refs & upload_ids or sources & job_ids
             ):
                 raise DomainError(
-                    "数据集正在被转换、合并或版本转换任务使用，请等待任务完成", 409
+                    "数据集正在被转换、合并、版本转换或首尾裁剪任务使用，请等待任务完成", 409
                 )
         for owner, error in snapshot["reference_errors"].items():
             if owner not in selected:

@@ -26,7 +26,7 @@ from pipeline.shared.core import DomainError, atomic_json, executable_path
 from ..conversion_options import normalize_options
 from ..episode_validation import EpisodeValidationError
 from ..quality import robot_profile_blockers, validate_robot_policy
-from .base import annotation_rig
+from .base import annotation_rig, configured_trim_policy
 
 TIANJI_RAW_FORMAT = "tianji_mcap_v1"
 TIANJI_RAW_FORMAT_ALIASES = (TIANJI_RAW_FORMAT, "tianji_ros2_mcap_v1")
@@ -415,6 +415,25 @@ class TianjiProvider:
             "output_fps": profile.get("output_fps"),
             "control_mode": profile.get("control_mode"),
         }
+
+    def stationary_trim_policy(self, profile: dict) -> dict:
+        """Reuse the Tianji provider's verified per-frame motion thresholds."""
+
+        config = profile.get("tianji") or {}
+        policy = configured_trim_policy(profile)
+        policy.setdefault("feature", "observation.state")
+        # Tianji's thresholds are per sample, not per second.
+        policy.setdefault("threshold_per_frame", True)
+        thresholds = dict(policy.get("unit_thresholds") or {})
+        joint = config.get("motion_joint_threshold_rad")
+        if isinstance(joint, (int, float)) and not isinstance(joint, bool):
+            thresholds.setdefault("rad", float(joint))
+        gripper = config.get("motion_gripper_threshold")
+        if isinstance(gripper, (int, float)) and not isinstance(gripper, bool):
+            thresholds.setdefault("normalized", float(gripper))
+        if thresholds:
+            policy["unit_thresholds"] = thresholds
+        return policy
 
     def annotation_context(self, profile: dict) -> dict:
         return {"rig": annotation_rig(profile), **self.analysis_context(profile)}

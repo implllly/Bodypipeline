@@ -252,9 +252,16 @@ configs/agilex-aloha*.json
 内容分析与自动标注共用 Provider 的上下文扩展点：
 
 ```text
-analysis_context(profile)    # 相机安装关系、关节/单位、控制方式等确定性信息
-annotation_context(profile)  # Argus rig（annotation_rig，缺省 teleop_arms）+ 上述相机信息
+analysis_context(profile)        # 相机安装关系、关节/单位、控制方式等确定性信息
+annotation_context(profile)      # Argus rig（annotation_rig，缺省 teleop_arms）+ 上述相机信息
+stationary_trim_policy(profile)  # 首尾静止帧检测信号与阈值；缺省读取 Profile 的 trim 块
 ```
+
+`stationary_trim_policy` 只描述机器人自身运动信号的语义：action 是速度、动作 token
+或需要换用其他特征时由 Provider 声明，Server 不按型号猜测。未声明时使用
+`observation.state` 和按单位配置的默认阈值。该策略同时用于独立的首尾裁剪预览和原始
+数据转换表单中的“转换时自动删除首尾静止帧”；Provider 应在写出的 `meta/info.json`
+中声明 `units`，这样单位阈值才能按机器人语义解析；缺少单位时回退到 `default_threshold`。
 
 Profile 只声明确知事实；未声明相机的安装位置时，Argus 会把依赖它的检查标为"未评估"，不会按型号猜。采集方式不是遥操作时，在 Profile 中声明 `annotation_rig`（`teleop_arms` / `handheld_gripper` / `ego_head`），不要在上层页面或 API 里按型号分支。
 

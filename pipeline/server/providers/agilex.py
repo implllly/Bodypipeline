@@ -21,7 +21,7 @@ from pipeline.shared.hdf5 import (
 from ..alignment import prepare_agilex, prepare_agilex_hdf5
 from ..conversion_options import normalize_options
 from ..quality import robot_profile_blockers, robot_quality, validate_robot_policy
-from .base import annotation_rig
+from .base import annotation_rig, configured_trim_policy
 from .hdf5_preset import write_hdf5_preset
 
 AGILEX_JOINT_DIMENSIONS = 14
@@ -244,6 +244,9 @@ class AgileXProvider:
             "output_fps": profile.get("output_fps"),
             "control_mode": profile.get("control_mode"),
         }
+
+    def stationary_trim_policy(self, profile: dict) -> dict:
+        return configured_trim_policy(profile)
 
     def annotation_context(self, profile: dict) -> dict:
         return {"rig": annotation_rig(profile), **self.analysis_context(profile)}

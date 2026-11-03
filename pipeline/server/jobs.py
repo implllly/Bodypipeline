@@ -32,6 +32,7 @@ from .storage import (
     storage_path,
 )
 from .subtask_export import SubtaskExportRunner
+from .trims import TrimRunner
 from .version_conversions import VersionConversionRunner
 
 
@@ -44,6 +45,7 @@ class JobRunner:
         self.merges = MergeRunner(settings, self)
         self.version_conversions = VersionConversionRunner(settings, self)
         self.subtask_exports = SubtaskExportRunner(settings, self)
+        self.trims = TrimRunner(settings, self)
 
     def recover(self):
         for job in self.store.all("job"):
@@ -63,6 +65,7 @@ class JobRunner:
         instruction=None,
         conversion_options=None,
         invalid_episode_policy="fail",
+        trim_idle_frames=False,
     ):
         return self._enqueue(
             [uid],
@@ -71,6 +74,7 @@ class JobRunner:
             instruction,
             conversion_options=conversion_options,
             invalid_episode_policy=invalid_episode_policy,
+            trim_idle_frames=trim_idle_frames,
         )
 
     def enqueue_collection(
@@ -82,6 +86,7 @@ class JobRunner:
         upload_ids=None,
         conversion_options=None,
         invalid_episode_policy="fail",
+        trim_idle_frames=False,
     ):
         if upload_ids is None:
             upload_ids = []
@@ -104,6 +109,7 @@ class JobRunner:
             collection_id,
             conversion_options=conversion_options,
             invalid_episode_policy=invalid_episode_policy,
+            trim_idle_frames=trim_idle_frames,
         )
 
     def _enqueue(
@@ -116,11 +122,21 @@ class JobRunner:
         *,
         conversion_options=None,
         invalid_episode_policy="fail",
+        trim_idle_frames=False,
     ):
         policy = validate_episode_policy(invalid_episode_policy)
-        if target_format not in TARGET_FORMATS or type(run_doctor) is not bool:
+        if (
+            target_format not in TARGET_FORMATS
+            or type(run_doctor) is not bool
+            or type(trim_idle_frames) is not bool
+        ):
             raise DomainError(
-                "目标格式必须为 v3.0 / v2.1，run_doctor 必须为布尔值", 400
+                "目标格式必须为 v3.0 / v2.1，run_doctor / trim_idle_frames 必须为布尔值",
+                400,
+            )
+        if trim_idle_frames and self.settings.processing_mode == "demo":
+            raise DomainError(
+                "演示模式不生成 LeRobot 数据集，无法删除首尾静止帧", 400
             )
         if (
             not upload_ids
@@ -181,6 +197,7 @@ class JobRunner:
                     "run_doctor": run_doctor,
                     **({"conversion_options": options} if options else {}),
                     **({"invalid_episode_policy": policy} if policy != "fail" else {}),
+                    **({"trim_idle_frames": True} if trim_idle_frames else {}),
                     "pipeline": "runtime-provider-v2",
                     "encoding": "libx264-yuv420p",
                     "letools": "1c417cc9c205f85cd01a5e5860646f1594738354",
@@ -230,6 +247,7 @@ class JobRunner:
                 "run_doctor": run_doctor,
                 "instruction": instruction,
                 "conversion_options": options,
+                "trim_idle_frames": trim_idle_frames,
                 "capture_mode": manifests[0]["capture_mode"],
                 "error": None,
             }
@@ -507,6 +525,9 @@ class JobRunner:
             return
         if job.get("operation") == "subtask_export":
             self.subtask_exports.run(job)
+            return
+        if job.get("operation") == "stationary_trim":
+            self.trims.run(job)
             return
         self.save(
             job,
@@ -831,19 +852,36 @@ class JobRunner:
             # dataset becomes available to previews or downstream users. This
             # also fixes restrictive modes created inside a Slurm allocation.
             share_data_tree(work)
+            info = json.loads((work / "dataset/meta/info.json").read_text())
+            expected_episodes = len(reports)
+            expected_frames = job["alignment_report"]["frames"]
+            if job.get("trim_idle_frames"):
+                self.save(job, stage="检测并裁剪首尾静止帧")
+                trimmed = self.trims.apply_to_conversion(job, work, allocation, info)
+                expected_episodes = trimmed["episodes"]
+                expected_frames = trimmed["frames"]
+                self.save(
+                    job,
+                    trim_summary=trimmed["summary"],
+                    trim_report=trimmed["report"],
+                    trim_policy=trimmed["policy"],
+                    episode_count=expected_episodes,
+                    frame_count=expected_frames,
+                )
             self.save(job, stage="深度结构验证")
             self._deep_validate(executable, work, allocation)
             info = json.loads((work / "dataset/meta/info.json").read_text())
             if (
-                info.get("total_episodes") != len(reports)
-                or info.get("total_frames") != job["alignment_report"]["frames"]
+                info.get("total_episodes") != expected_episodes
+                or info.get("total_frames") != expected_frames
             ):
                 raise DomainError("转换结果的 episode / 帧数与输入快照不一致")
             self.save(
                 job,
                 dataset_ready=True,
                 dataset_path=str(work / "dataset"),
-                episode_count=len(reports),
+                episode_count=info.get("total_episodes"),
+                frame_count=info.get("total_frames"),
             )
             if not job.get("run_doctor", True):
                 self._close_allocation()

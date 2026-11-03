@@ -41,6 +41,7 @@ class ConversionRequest(BaseModel):
     instruction: str | None = Field(default=None, min_length=1, max_length=2000)
     conversion_options: ConversionOptions = Field(default_factory=ConversionOptions)
     invalid_episode_policy: InvalidEpisodePolicy = "fail"
+    trim_idle_frames: StrictBool = False
 
 
 class BatchConversionRequest(ConversionRequest):
@@ -112,6 +113,30 @@ class SubtaskExportRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=2000)
 
 
+class TrimOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    trim_start: StrictBool | None = None
+    trim_end: StrictBool | None = None
+    min_idle_seconds: float | None = Field(default=None, ge=0, le=60)
+    min_active_seconds: float | None = Field(default=None, ge=0, le=60)
+    padding_before_seconds: float | None = Field(default=None, ge=0, le=60)
+    padding_after_seconds: float | None = Field(default=None, ge=0, le=60)
+    threshold_scale: float | None = Field(default=None, ge=0.01, le=100)
+    remove_fully_static: StrictBool | None = None
+
+
+class TrimPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    options: TrimOptions = Field(default_factory=TrimOptions)
+
+
+class TrimRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preview_id: str = Field(min_length=1, max_length=128)
+    name: str | None = Field(default=None, min_length=1, max_length=2000)
+    run_doctor: StrictBool = True
+
+
 class DatasetDeletionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["raw", "result"]
@@ -139,6 +164,7 @@ def create_app(settings, background=True):
     annotations = AnnotationRunner(settings, ingest.store, runtimes)
     viewer = ViewerManager(settings, ingest.store)
     datasets = DatasetManager(settings, runner, viewer)
+    trims = runner.trims
     # Enqueueing consumers and marking deletions share one admission lock.
     checks.lock = analyses.lock = annotations.lock = runner.lock
     lock = ProcessLock(settings.root / "server.lock")
@@ -148,7 +174,7 @@ def create_app(settings, background=True):
         while not stopping.is_set():
             # One failing worker must not stop the shared loop: a dead loop means
             # every later job, check and analysis silently stops being picked up.
-            for worker in (datasets.tick, runner.tick, checks.tick, analyses.tick):
+            for worker in (datasets.tick, runner.tick, checks.tick, analyses.tick, trims.tick):
                 if stopping.is_set():
                     break
                 try:
@@ -196,6 +222,7 @@ def create_app(settings, background=True):
         annotations.recover()
         viewer.recover()
         datasets.recover()
+        trims.recover()
         tasks = (
             [
                 asyncio.create_task(loop()),
@@ -224,6 +251,7 @@ def create_app(settings, background=True):
     app.state.annotations = annotations
     app.state.runtimes = runtimes
     app.state.datasets = datasets
+    app.state.trims = trims
     install_security(app, settings, device_prefix="/device/")
     mount_ui(app, report=True)
 
@@ -482,6 +510,39 @@ def create_app(settings, background=True):
     def merge(body: MergeRequest):
         return job_response(runner.merges.enqueue(body.source_job_ids, body.name))
 
+    @app.get("/api/trim-candidates")
+    def trim_candidates():
+        return trims.candidates()
+
+    @app.get("/api/jobs/{jid}/trim-policy")
+    def trim_policy(jid: str):
+        return trims.query_policy(jid)
+
+    @app.get("/api/jobs/{jid}/trim-previews")
+    def trim_preview_list(jid: str):
+        ingest.store.get("job", jid)
+        return trims.listing(jid)
+
+    @app.post("/api/jobs/{jid}/trim-previews", status_code=202)
+    def trim_preview_start(jid: str, body: TrimPreviewRequest | None = None):
+        options = (body or TrimPreviewRequest()).options
+        return trims.enqueue_preview(jid, options.model_dump())
+
+    @app.get("/api/trim-previews/{pid}")
+    def trim_preview(pid: str, offset: int = 0, limit: int = 200):
+        return trims.preview(pid, offset, limit)
+
+    @app.post("/api/jobs/{jid}/trims", status_code=202)
+    def trim_start(jid: str, body: TrimRequest):
+        return job_response(
+            trims.enqueue(
+                jid,
+                body.preview_id,
+                name=body.name,
+                run_doctor=body.run_doctor,
+            )
+        )
+
     @app.post("/api/uploads/{uid}/process", status_code=202)
     def process(uid: str, body: ConversionRequest | None = Body(default=None)):
         options = body or ConversionRequest()
@@ -714,6 +775,8 @@ def create_app(settings, background=True):
             "merge",
             "source-validate",
             "environment",
+            "trim",
+            "trim-detect",
         }:
             raise DomainError("日志不存在", 404)
         row = ingest.store.get("job", jid)

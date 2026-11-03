@@ -425,3 +425,27 @@ Viewer 侧边栏垃圾箱按钮位于标记按钮左侧，数据集回收站地�
 验证：`tests/test_recycle.py` 测试 API、权限、路径约束及持久化；
 `tests/fixtures/recycle_scenario.py` 在独立 letools 环境中验证共享数据/视频的
 实际删除、非关键帧边界、全部清空，以及发布前后中断恢复。
+
+## 7. 首尾静止帧裁剪
+
+`pipeline.server.stationary_trim` 只包含策略校验、特征解析和边界检测，可同时在
+Server 进程和 letools 环境中导入。`pipeline.server.trim_worker` 在 letools Python
+环境执行 `detect` 或 `trim`：读取每个 Episode 的数值特征，按 Provider 解析后的
+阈值判断运动，只裁剪首尾空闲区间，并把同一区间应用到全部相机视频。
+
+worker 不调用 Doctor 的 `trim_dataset()`，因为该实现覆盖向量动作、视频同步和
+元数据的范围不完整。裁剪后重新编号 Episode、`frame_index`、全局 `index`、时间
+戳、tasks、split 和统计信息，v2.1 与 v3.0 分别写入对应元数据格式，再执行
+`validate_dataset(..., deep=True)`。视频复用回收站实现的 GOP 感知剪切：可安全
+保持关键帧时直接复制 packet，否则重新编码 H.264。
+
+同一 worker 也服务于原始数据转换表单中的“转换时自动删除首尾静止帧”：Server
+在转换后对 `work/dataset` 执行 `detect`，确认计划后把结果写入 `work/trimmed`，
+校验 Episode / 帧数一致再原子替换。该路径复用转换任务已打开的 Slurm 分配和日志
+基础设施（`trim-detect` / `trim`），并且始终使用 `remove_fully_static=False`，
+避免转换任务静默丢弃整段 Episode。
+
+验证：`tests/test_stationary_trim.py` 覆盖策略、阈值单位、Preview API、Doctor
+门禁，并在真实 letools 环境中对 v2.1 / v3.0 数据集执行检测和裁剪；
+`tests/fixtures/trim_scenario.py` 生成带首尾静止帧的固定数据集并检查索引、
+时间戳、统计和视频帧数。
