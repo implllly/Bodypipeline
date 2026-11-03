@@ -19,6 +19,14 @@ export async function reviewRequest<T>(
   url: string,
   body?: unknown,
 ): Promise<T> {
+  return requestReview<T>(url, body, 0);
+}
+
+async function requestReview<T>(
+  url: string,
+  body: unknown,
+  attempt: number,
+): Promise<T> {
   const r = await fetch(url, {
     credentials: "same-origin",
     cache: "no-store",
@@ -27,6 +35,19 @@ export async function reviewRequest<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await r.json();
+  // Opening a freshly exported dataset can race another reader of its lock.
+  // Retry only this temporary read lock; edits and revision conflicts surface
+  // immediately and are never automatically resubmitted.
+  if (
+    body === undefined &&
+    url.startsWith("/api/subtask-review/") &&
+    r.status === 409 &&
+    data.detail === "该数据集正在处理，请稍后重试" &&
+    attempt < 5
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    return requestReview<T>(url, body, attempt + 1);
+  }
   if (!r.ok)
     throw new Error(
       typeof data.detail === "string" ? data.detail : `请求失败 (${r.status})`,

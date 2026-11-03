@@ -299,6 +299,8 @@ bash scripts/install_visualizer_zh_patch.sh
 
 ### 3.7 AI 初标、人工修订与服务端保存
 
+自动标注页可以选择工作区里保存的同一共享模板。AI 使用冻结的固定 Subtask ID 和字段定义生成初稿，导出时携带完整 `task_document`，新工作区直接恢复该模板、逐次尝试、评分、备注和作用范围；不再把模板任务的自由动作描述追加成新 Subtask。模板输出校验失败的 Episode 会明确标记失败。原来的自由分析模式继续保留。安装和本地离线演示见 [自动标注任务](deployment.md#641-自动标注任务)。
+
 管理台现有 AI 标注流程生成 Subtask 数据集后，在 Viewer 打开其预览。新时间轴直接加载该数据集的 AI / 来源片段；同名的多次尝试各自保留 ID、边界和评分。新工作区负责 Subtask / NULL、Episode 评价和单帧字段；下方的「更多标注：语言、计划与 VQA」继续编辑非 Subtask 内容，共用一次保存和一次导出。
 
 - **保存到服务器**：`POST /api/subtask-review/<dataset-id>/episodes/<episode>` 同时保存 `segments`、完整 `task_document` 和手动 / VQA `atoms`。草稿位于 Server `state/subtask_draft/`，每次保存先写 `state/subtask_draft_history/` 历史，再发布新版本。另一窗口已保存或来源变化时返回 409，不覆盖旧版本。

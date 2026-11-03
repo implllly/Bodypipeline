@@ -15,6 +15,21 @@ export interface TemplateLibrary {
   templates: TaskTemplate[];
 }
 
+/** Server JSON key order does not represent a template or document change. */
+export function sameTaskDocument(a: TaskDocument, b: TaskDocument): boolean {
+  const snapshot = (doc: TaskDocument) =>
+    JSON.stringify(doc, (_key, value) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => [key, value[key]]),
+          )
+        : value,
+    );
+  return snapshot(a) === snapshot(b);
+}
+
 /** Exactly one Subtask label per frame; NULL and gaps stay out of the vocabulary. */
 export function taskSegments(doc: TaskDocument, count: number) {
   readDocument(JSON.stringify(doc), doc.templateSnapshot, count);

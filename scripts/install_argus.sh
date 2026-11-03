@@ -16,6 +16,8 @@ SRC="$ARGUS_ROOT/src"
 REPO="https://github.com/Pantheon-Industries-Inc/argus"
 REV="383ca11cf260e2db6da7ba901b8d60cfa8fc68fb"
 PATCH="$ROOT/patches/argus/0001-pipeline-gateway.py"
+TEMPLATE_PATCH="$ROOT/patches/argus/0002-task-template.py"
+TEMPLATE_HELPER="$ROOT/pipeline/server/argus_template_contract.py"
 
 command -v uv >/dev/null || { echo "Install uv before running this script" >&2; exit 1; }
 command -v ffmpeg >/dev/null || {
@@ -61,9 +63,15 @@ if ! grep -q "pipeline-argus-integration:v1" "$SRC/label/harness.py" \
    || ! grep -q "pipeline-argus-generic-route:v5" "$SRC/label/route.py" \
    || ! grep -q "pipeline-argus-generic-pricing:v5" "$SRC/label/pricing.py" \
    || ! grep -q "pipeline-argus-configured-prices:v6" "$SRC/label/harness.py" \
-   || ! grep -q "pipeline-argus-generic-dry-run:v6" "$SRC/label/harness.py"; then
+   || ! grep -q "pipeline-argus-generic-dry-run:v6" "$SRC/label/harness.py" \
+   || ! grep -q "pipeline-argus-task-template:v1" "$SRC/label/episode.py" \
+   || ! grep -q "pipeline-argus-task-template:v1" "$SRC/label/harness.py" \
+   || ! grep -q "pipeline-argus-template-retry:v1" "$SRC/label/harness.py" \
+   || ! cmp -s "$TEMPLATE_HELPER" "$SRC/label/pipeline_template.py"; then
   git -C "$SRC" reset --hard "$REV"
   python3 "$PATCH" "$SRC"
+  python3 "$TEMPLATE_PATCH" "$SRC"
+  git -C "$SRC" add label/pipeline_template.py
   git -C "$SRC" -c user.name=bodypipeline -c user.email=bodypipeline@local \
     commit -am "$INTEGRATION_SUBJECT"
 fi
@@ -94,6 +102,10 @@ grep -q "pipeline-argus-configured-prices:v6" "$SRC/label/harness.py" || {
 }
 grep -q "pipeline-argus-generic-dry-run:v6" "$SRC/label/harness.py" || {
   echo "Argus generic dry-run pricing hook was not applied" >&2
+  exit 1
+}
+grep -q "pipeline-argus-task-template:v1" "$SRC/label/episode.py" || {
+  echo "Argus task template hook was not applied" >&2
   exit 1
 }
 

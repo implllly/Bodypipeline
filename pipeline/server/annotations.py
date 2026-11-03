@@ -20,7 +20,7 @@ import time
 import uuid
 from pathlib import Path
 
-from pipeline.shared.core import DomainError, now
+from pipeline.shared.core import DomainError, atomic_json, digest, now
 
 from . import argus_annotation
 from .datasets import dataset_for_job
@@ -28,6 +28,8 @@ from .merges import source_snapshot
 from .providers import get_provider
 from .providers.base import ANNOTATION_RIGS
 from .storage import data_directory, storage_path
+from .task_annotations import TemplateLibrary
+from .template_annotation import SPEC_NAME, retry_manifest
 
 QUEUED = "QUEUED"
 RUNNING = "RUNNING"
@@ -125,6 +127,8 @@ class AnnotationRunner:
         )
         return {
             "available": ok,
+            "template_available": argus_annotation.template_available(self.settings),
+            "template_library": TemplateLibrary(self.store).read(),
             "reason": why,
             "models": models,
             "default_model": default_model,
@@ -132,9 +136,7 @@ class AnnotationRunner:
             "prices": prices,
             "default_base_url": (self.settings.argus_base_url or "").strip(),
             "rigs": list(ANNOTATION_RIGS),
-            "api_key_configured": argus_annotation.server_key_configured(
-                self.settings
-            ),
+            "api_key_configured": argus_annotation.server_key_configured(self.settings),
             "gateway_configured": bool(self.settings.argus_base_url),
             "defaults": {
                 "cap_usd": float(self.settings.argus_task_budget_usd),
@@ -263,6 +265,8 @@ class AnnotationRunner:
         max_tokens: int | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
+        template_id: str | None = None,
+        template_revision: int | None = None,
     ):
         with self.lock:
             job = self.store.get("job", job_id)
@@ -271,17 +275,36 @@ class AnnotationRunner:
             if not ok:
                 raise DomainError(f"Argus 自动标注不可用：{why}", 503)
 
+            template = None
+            library_revision = None
+            if template_id:
+                if not argus_annotation.template_available(self.settings):
+                    raise DomainError(
+                        "Argus 尚未安装模板支持，请重新运行 scripts/install_argus.sh",
+                        503,
+                    )
+                library = TemplateLibrary(self.store).read()
+                if (
+                    template_revision is not None
+                    and template_revision != library["revision"]
+                ):
+                    raise DomainError("模板库已更新，请刷新模板后再提交 AI 标注", 409)
+                template = next(
+                    (t for t in library["templates"] if t["id"] == template_id), None
+                )
+                if template is None:
+                    raise DomainError("任务模板不存在，请刷新模板列表", 404)
+                if not template["subtasks"] and not template["fields"]:
+                    raise DomainError("任务模板至少需要一个 Subtask 或自定义字段", 422)
+                library_revision = library["revision"]
+
             explicit_model = model is not None
             model = (model or self.settings.argus_model or "").strip()
             allowed_models = list(self.settings.argus_models or [])
             # A per-task gateway publishes its own catalogue, so the server
             # allowlist only governs the server's default upstream.
             custom_gateway = bool(str(base_url or "").strip())
-            if (
-                allowed_models
-                and model not in allowed_models
-                and not custom_gateway
-            ):
+            if allowed_models and model not in allowed_models and not custom_gateway:
                 if explicit_model:
                     raise DomainError("标注模型不在服务器允许列表中", 400)
                 # A configured default outside the allowlist is a server
@@ -323,6 +346,13 @@ class AnnotationRunner:
 
             for row in self.store.all("annotation"):
                 if row["job_id"] == job_id and row["state"] in ACTIVE:
+                    if (row.get("task_template") or {}).get("id") != template_id or (
+                        template and row.get("template_signature") != digest(template)
+                    ):
+                        raise DomainError(
+                            "该数据集已有使用其他模板的 AI 任务，请等待完成或取消后再提交",
+                            409,
+                        )
                     return row
 
             credentials = argus_annotation.resolve_credentials(
@@ -369,6 +399,9 @@ class AnnotationRunner:
                 "episodes_done": 0,
                 "episodes_failed": 0,
                 "model": model,
+                "task_template": template,
+                "template_signature": digest(template) if template else None,
+                "template_library_revision": library_revision,
                 "note": note,
                 "cap_usd": round(cap, 4),
                 "concurrency": concurrency,
@@ -471,7 +504,9 @@ class AnnotationRunner:
                 )
             return self.save(row, stage="正在取消", cancel_requested=True)
 
-    def resume(self, aid: str, *, base_url: str | None = None, api_key: str | None = None):
+    def resume(
+        self, aid: str, *, base_url: str | None = None, api_key: str | None = None
+    ):
         with self.lock:
             row = self.store.get("annotation", aid)
             if row["state"] in ACTIVE:
@@ -481,6 +516,12 @@ class AnnotationRunner:
             ok, why = self.available()
             if not ok:
                 raise DomainError(f"Argus 自动标注不可用：{why}", 503)
+            if row.get("task_template") and not argus_annotation.template_available(
+                self.settings
+            ):
+                raise DomainError(
+                    "Argus 模板支持缺失，请重新运行 scripts/install_argus.sh", 503
+                )
             gap = argus_annotation.pricing_gap(self.settings, row.get("model") or "")
             if gap:
                 raise DomainError(gap, 400)
@@ -490,8 +531,13 @@ class AnnotationRunner:
                 raise DomainError("来源数据集路径已变化，请创建新的标注任务", 409)
             current = source_snapshot(data)
             saved = row.get("source") or {}
-            if saved.get("signature") and current.get("signature") != saved["signature"]:
-                raise DomainError("来源数据集内容已变化，不能续跑；请创建新的标注任务", 409)
+            if (
+                saved.get("signature")
+                and current.get("signature") != saved["signature"]
+            ):
+                raise DomainError(
+                    "来源数据集内容已变化，不能续跑；请创建新的标注任务", 409
+                )
             # A server restart clears the in-memory key, so resuming asks for
             # credentials again unless the server has its own default.
             credentials = argus_annotation.resolve_credentials(
@@ -507,7 +553,9 @@ class AnnotationRunner:
                 "cancel_requested": False,
                 "base_url": credentials["task_base_url"],
             }
-            budget = self.budget(row["job_id"], int(row.get("input_episode_count") or 1))
+            budget = self.budget(
+                row["job_id"], int(row.get("input_episode_count") or 1)
+            )
             if budget["available_usd"] <= 0:
                 raise BudgetExceeded("今日或本数据集的自动标注预算已用尽，不能续跑")
             fields["budget"] = budget
@@ -526,7 +574,9 @@ class AnnotationRunner:
                 # preparation that Argus refuses to resume. Nothing paid is lost by
                 # starting over, so do that on the first retry instead of failing
                 # once more and asking the operator to resume twice.
-                fields["fresh_start"] = str(row.get("stage") or "") not in LABELLING_STAGES
+                fields["fresh_start"] = (
+                    str(row.get("stage") or "") not in LABELLING_STAGES
+                )
             self.save(row, **fields)
             self.credentials[aid] = credentials
             return row
@@ -684,6 +734,11 @@ class AnnotationRunner:
                         "note": row.get("note"),
                         "cap_usd": row.get("cap_usd"),
                         "parameters": {
+                            "task_template": row.get("task_template"),
+                            "template_signature": row.get("template_signature"),
+                            "template_library_revision": row.get(
+                                "template_library_revision"
+                            ),
                             "concurrency": row.get("concurrency"),
                             "reasoning": row.get("reasoning"),
                             "sample_fps": row.get("sample_fps"),
@@ -704,6 +759,22 @@ class AnnotationRunner:
                     ensure_ascii=False,
                 )
             )
+            if row.get("task_template"):
+                if digest(row["task_template"]) != row.get("template_signature"):
+                    raise DomainError("AI 任务的模板快照已变化，不能继续标注", 409)
+                spec = {
+                    "version": 1,
+                    "template": row["task_template"],
+                    "signature": row["template_signature"],
+                }
+                spec_path = work / SPEC_NAME
+                if spec_path.exists() and json.loads(spec_path.read_text()) != spec:
+                    raise DomainError("AI 任务模板文件与快照不一致，不能继续标注", 409)
+                atomic_json(spec_path, spec)
+                if int(row.get("attempts") or 0) > 1:
+                    atomic_json(
+                        work / "task-template-invalid.json", retry_manifest(work)
+                    )
             argv = argus_annotation.command(self.settings, row, data, work)
             env = argus_annotation.environment(
                 self.settings,
@@ -728,9 +799,7 @@ class AnnotationRunner:
                     cwd=argus_annotation.source_path(self.settings),
                     env=env,
                 )
-                deadline = started + float(
-                    self.settings.argus_annotation_timeout
-                )
+                deadline = started + float(self.settings.argus_annotation_timeout)
                 offset = 0
                 stage = row["stage"]
                 next_update = 0.0
@@ -906,6 +975,9 @@ class AnnotationRunner:
                     "base_url",
                     "robot_type",
                     "model",
+                    "task_template",
+                    "template_signature",
+                    "template_library_revision",
                     "note",
                     "cap_usd",
                     "concurrency",
