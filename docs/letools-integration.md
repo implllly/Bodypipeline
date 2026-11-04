@@ -246,6 +246,14 @@ Visualizer 时重新构建，无需重新转换数据集。
 原始采样和单位不变，支持图例开关、时间联动、通道筛选和单列放大。三路视频等宽铺满，
 保持画面比例，顺序为左腕、Head、右腕；支持隐藏、恢复、放大和 Esc 退出放大。
 
+“Episode 时长”统计（最短、最长、平均值、中位数、标准差和分布直方图）和“Episode 时长筛选”
+对 LeRobot v2.1 与 v3.0 数据集都可用，不由机器人型号决定。v3.0 从
+`meta/episodes/*.parquet` 读取每段 `length`，v2.1 从 `meta/episodes.jsonl` 逐行读取同样的
+`episode_index` / `length`，统一除以 `meta/info.json` 的 `fps` 换算秒数后再统计。缺少 `length`、
+文件不可读或版本不受支持时这两块保持隐藏，而不是回退成按总帧数估算平均时长。
+`pipeline/server/viewer_episode_lengths.patch` 同样参与构建指纹，部署后重启 Viewer
+会自动重建，不需要转换数据集或改动服务端数据。
+
 工作台、预览、登录和质检报告默认使用深夜模式，可切换浅色。`pipeline/web/theme.js`
 通过同主机 Cookie 在 Server / Viewer 端口间共享偏好，并用 localStorage 保留设置。
 页面头部先初始化主题，避免进入页面时闪白。所有展示补丁、UI 源文件与主题脚本都参与

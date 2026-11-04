@@ -27,6 +27,7 @@ CHANNEL_PATCH = Path(__file__).with_name("viewer_channels.patch")
 PRESENTATION_PATCH = Path(__file__).with_name("viewer_presentation.patch")
 CAMERA_ORDER_PATCH = Path(__file__).with_name("viewer_camera_order.patch")
 SCORE_FILTER_PATCH = Path(__file__).with_name("viewer_score_filter.patch")
+EPISODE_LENGTHS_PATCH = Path(__file__).with_name("viewer_episode_lengths.patch")
 UI_ASSETS = Path(__file__).with_name("viewer_ui")
 THEME_SCRIPT = Path(__file__).parents[1] / "web/theme.js"
 
@@ -141,6 +142,7 @@ def patch_presentation(cache: Path):
     else:
         raise RuntimeError("Unexpected Visualizer source; cannot apply camera order")
     patch_score_filter(cache)
+    patch_episode_lengths(cache)
     patch_subtask_review(cache)
     destinations = {
         "data-recharts.tsx": "src/components/data-recharts.tsx",
@@ -231,6 +233,21 @@ def patch_subtask_review(cache: Path):
     patch_annotations(cache)
 
 
+def patch_episode_lengths(cache: Path):
+    """Extend the length statistics and duration filter to LeRobot v2.1."""
+    command = ["git", "apply", "--unsafe-paths", "--directory", str(cache / "source")]
+    patch = EPISODE_LENGTHS_PATCH.read_text()
+    for flags in (["--check"], ["--reverse", "--check"]):
+        result = subprocess.run(
+            command + flags, input=patch, text=True, capture_output=True
+        )
+        if result.returncode == 0:
+            if "--reverse" not in flags:
+                subprocess.run(command, input=patch, text=True, check=True)
+            return
+    raise RuntimeError("Unexpected Visualizer source; cannot apply episode lengths")
+
+
 def _fingerprint(cache: Path, data_origin: str) -> str:
     """Identify the build inputs; the origin is baked into the browser bundle."""
 
@@ -247,6 +264,7 @@ def _fingerprint(cache: Path, data_origin: str) -> str:
                     PRESENTATION_PATCH.read_bytes()
                     + CAMERA_ORDER_PATCH.read_bytes()
                     + SCORE_FILTER_PATCH.read_bytes()
+                    + EPISODE_LENGTHS_PATCH.read_bytes()
                     + THEME_SCRIPT.read_bytes()
                     + Path(__file__).read_bytes()
                     + Path(__file__).with_name("viewer_annotations.py").read_bytes()

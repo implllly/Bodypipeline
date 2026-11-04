@@ -1,0 +1,294 @@
+diff --git a/src/app/[org]/[dataset]/[episode]/actions.ts b/src/app/[org]/[dataset]/[episode]/actions.ts
+index 8bf95eb..74feaa9 100644
+--- a/src/app/[org]/[dataset]/[episode]/actions.ts
++++ b/src/app/[org]/[dataset]/[episode]/actions.ts
+@@ -3,7 +3,7 @@
+ import { getDatasetVersionAndInfo } from "@/utils/versionUtils";
+ import type { DatasetMetadata } from "@/utils/parquetUtils";
+ import {
+-  loadAllEpisodeLengthsV3,
++  loadAllEpisodeLengths,
+   loadAllEpisodeFrameInfo,
+   loadCrossEpisodeActionVariance,
+   loadEpisodeFlatChartData,
+@@ -18,8 +18,7 @@ export async function fetchEpisodeLengthStats(
+ ): Promise<EpisodeLengthStats | null> {
+   const repoId = `${org}/${dataset}`;
+   const { version, info } = await getDatasetVersionAndInfo(repoId);
+-  if (version !== "v3.0") return null;
+-  return loadAllEpisodeLengthsV3(repoId, version, info.fps);
++  return loadAllEpisodeLengths(repoId, version, info.fps);
+ }
+ 
+ export async function fetchEpisodeFrames(
+diff --git a/src/app/[org]/[dataset]/[episode]/episode-viewer.tsx b/src/app/[org]/[dataset]/[episode]/episode-viewer.tsx
+index cd71f33..3918a85 100644
+--- a/src/app/[org]/[dataset]/[episode]/episode-viewer.tsx
++++ b/src/app/[org]/[dataset]/[episode]/episode-viewer.tsx
+@@ -26,7 +26,7 @@ import {
+   getAdjacentEpisodesVideoInfo,
+   computeColumnMinMax,
+   getEpisodeDataSafe,
+-  loadAllEpisodeLengthsV3,
++  loadAllEpisodeLengths,
+   loadAllEpisodeFrameInfo,
+   loadCrossEpisodeActionVariance,
+   type EpisodeData,
+@@ -369,10 +369,9 @@ function EpisodeViewerInner({
+     if (org && dataset) {
+       const repoId = `${org}/${dataset}`;
+       getDatasetVersionAndInfo(repoId)
+-        .then(({ version, info }) => {
+-          if (version !== "v3.0") return null;
+-          return loadAllEpisodeLengthsV3(repoId, version, info.fps);
+-        })
++        .then(({ version, info }) =>
++          loadAllEpisodeLengths(repoId, version, info.fps),
++        )
+         .then((result) => {
+           if (!mountedRef.current) return;
+           setEpisodeLengthStats(result);
+diff --git a/src/app/[org]/[dataset]/[episode]/fetch-data.ts b/src/app/[org]/[dataset]/[episode]/fetch-data.ts
+index ec36f11..b9a9d62 100644
+--- a/src/app/[org]/[dataset]/[episode]/fetch-data.ts
++++ b/src/app/[org]/[dataset]/[episode]/fetch-data.ts
+@@ -1616,89 +1616,54 @@ export async function loadAllEpisodeLengthsV3(
+       }
+     }
+ 
+-    if (allEpisodes.length === 0) return null;
+-
+-    const withSeconds = allEpisodes.map((ep) => ({
+-      episodeIndex: ep.index,
+-      frames: ep.length,
+-      lengthSeconds: Math.round((ep.length / fps) * 100) / 100,
+-    }));
+-
+-    const sortedByLength = [...withSeconds].sort(
+-      (a, b) => a.lengthSeconds - b.lengthSeconds,
+-    );
+-    const shortestEpisodes = sortedByLength.slice(0, 5);
+-    const longestEpisodes = sortedByLength.slice(-5).reverse();
+-
+-    const lengths = withSeconds.map((e) => e.lengthSeconds);
+-    const sum = lengths.reduce((a, b) => a + b, 0);
+-    const mean = Math.round((sum / lengths.length) * 100) / 100;
+-
+-    const sorted = [...lengths].sort((a, b) => a - b);
+-    const mid = Math.floor(sorted.length / 2);
+-    const median =
+-      sorted.length % 2 === 0
+-        ? Math.round(((sorted[mid - 1] + sorted[mid]) / 2) * 100) / 100
+-        : sorted[mid];
++    return summarizeEpisodeLengths(allEpisodes, fps);
++  } catch {
++    return null;
++  }
++}
+ 
+-    const variance =
+-      lengths.reduce((acc, l) => acc + (l - mean) ** 2, 0) / lengths.length;
+-    const std = Math.round(Math.sqrt(variance) * 100) / 100;
++/**
++ * Shared length statistics for every dataset version.
++ * ``allEpisodes`` carries raw frame counts; ``fps`` converts them to seconds.
++ */
++function summarizeEpisodeLengths(
++  allEpisodes: { index: number; length: number }[],
++  fps: number,
++): EpisodeLengthStats | null {
++  if (allEpisodes.length === 0) return null;
+ 
+-    // Build histogram
+-    const histMin = Math.min(...lengths);
+-    const histMax = Math.max(...lengths);
++  const withSeconds = allEpisodes.map((ep) => ({
++    episodeIndex: ep.index,
++    frames: ep.length,
++    lengthSeconds: Math.round((ep.length / fps) * 100) / 100,
++  }));
+ 
+-    if (histMax === histMin) {
+-      return {
+-        shortestEpisodes,
+-        longestEpisodes,
+-        allEpisodeLengths: withSeconds,
+-        meanEpisodeLength: mean,
+-        medianEpisodeLength: median,
+-        stdEpisodeLength: std,
+-        episodeLengthHistogram: [
+-          { binLabel: `${histMin.toFixed(1)}s`, count: lengths.length },
+-        ],
+-      };
+-    }
++  const sortedByLength = [...withSeconds].sort(
++    (a, b) => a.lengthSeconds - b.lengthSeconds,
++  );
++  const shortestEpisodes = sortedByLength.slice(0, 5);
++  const longestEpisodes = sortedByLength.slice(-5).reverse();
+ 
+-    const p1 = sorted[Math.floor(sorted.length * 0.01)];
+-    const p99 = sorted[Math.ceil(sorted.length * 0.99) - 1];
+-    const range = p99 - p1 || 1;
++  const lengths = withSeconds.map((e) => e.lengthSeconds);
++  const sum = lengths.reduce((a, b) => a + b, 0);
++  const mean = Math.round((sum / lengths.length) * 100) / 100;
+ 
+-    const targetBins = Math.max(
+-      10,
+-      Math.min(50, Math.ceil(Math.log2(lengths.length) + 1)),
+-    );
+-    const rawBinWidth = range / targetBins;
+-    const magnitude = Math.pow(10, Math.floor(Math.log10(rawBinWidth)));
+-    const niceSteps = [1, 2, 2.5, 5, 10];
+-    const niceBinWidth =
+-      niceSteps.map((s) => s * magnitude).find((w) => w >= rawBinWidth) ??
+-      rawBinWidth;
+-
+-    const niceMin = Math.floor(p1 / niceBinWidth) * niceBinWidth;
+-    const niceMax = Math.ceil(p99 / niceBinWidth) * niceBinWidth;
+-    const actualBinCount = Math.max(
+-      1,
+-      Math.round((niceMax - niceMin) / niceBinWidth),
+-    );
+-    const bins = Array.from({ length: actualBinCount }, () => 0);
++  const sorted = [...lengths].sort((a, b) => a - b);
++  const mid = Math.floor(sorted.length / 2);
++  const median =
++    sorted.length % 2 === 0
++      ? Math.round(((sorted[mid - 1] + sorted[mid]) / 2) * 100) / 100
++      : sorted[mid];
+ 
+-    for (const len of lengths) {
+-      let binIdx = Math.floor((len - niceMin) / niceBinWidth);
+-      if (binIdx < 0) binIdx = 0;
+-      if (binIdx >= actualBinCount) binIdx = actualBinCount - 1;
+-      bins[binIdx]++;
+-    }
++  const variance =
++    lengths.reduce((acc, l) => acc + (l - mean) ** 2, 0) / lengths.length;
++  const std = Math.round(Math.sqrt(variance) * 100) / 100;
+ 
+-    const histogram = bins.map((count, i) => {
+-      const lo = niceMin + i * niceBinWidth;
+-      const hi = lo + niceBinWidth;
+-      return { binLabel: `${lo.toFixed(1)}–${hi.toFixed(1)}s`, count };
+-    });
++  // Build histogram
++  const histMin = Math.min(...lengths);
++  const histMax = Math.max(...lengths);
+ 
++  if (histMax === histMin) {
+     return {
+       shortestEpisodes,
+       longestEpisodes,
+@@ -1706,13 +1671,108 @@ export async function loadAllEpisodeLengthsV3(
+       meanEpisodeLength: mean,
+       medianEpisodeLength: median,
+       stdEpisodeLength: std,
+-      episodeLengthHistogram: histogram,
++      episodeLengthHistogram: [
++        { binLabel: `${histMin.toFixed(1)}s`, count: lengths.length },
++      ],
+     };
++  }
++
++  const p1 = sorted[Math.floor(sorted.length * 0.01)];
++  const p99 = sorted[Math.ceil(sorted.length * 0.99) - 1];
++  const range = p99 - p1 || 1;
++
++  const targetBins = Math.max(
++    10,
++    Math.min(50, Math.ceil(Math.log2(lengths.length) + 1)),
++  );
++  const rawBinWidth = range / targetBins;
++  const magnitude = Math.pow(10, Math.floor(Math.log10(rawBinWidth)));
++  const niceSteps = [1, 2, 2.5, 5, 10];
++  const niceBinWidth =
++    niceSteps.map((s) => s * magnitude).find((w) => w >= rawBinWidth) ??
++    rawBinWidth;
++
++  const niceMin = Math.floor(p1 / niceBinWidth) * niceBinWidth;
++  const niceMax = Math.ceil(p99 / niceBinWidth) * niceBinWidth;
++  const actualBinCount = Math.max(
++    1,
++    Math.round((niceMax - niceMin) / niceBinWidth),
++  );
++  const bins = Array.from({ length: actualBinCount }, () => 0);
++
++  for (const len of lengths) {
++    let binIdx = Math.floor((len - niceMin) / niceBinWidth);
++    if (binIdx < 0) binIdx = 0;
++    if (binIdx >= actualBinCount) binIdx = actualBinCount - 1;
++    bins[binIdx]++;
++  }
++
++  const histogram = bins.map((count, i) => {
++    const lo = niceMin + i * niceBinWidth;
++    const hi = lo + niceBinWidth;
++    return { binLabel: `${lo.toFixed(1)}–${hi.toFixed(1)}s`, count };
++  });
++
++  return {
++    shortestEpisodes,
++    longestEpisodes,
++    allEpisodeLengths: withSeconds,
++    meanEpisodeLength: mean,
++    medianEpisodeLength: median,
++    stdEpisodeLength: std,
++    episodeLengthHistogram: histogram,
++  };
++}
++
++/**
++ * Load all episode lengths from ``meta/episodes.jsonl`` (v2.1).
++ * Returns min/max/mean/median/std and a histogram, or null if unavailable.
++ */
++export async function loadAllEpisodeLengthsV21(
++  repoId: string,
++  version: string,
++  fps: number,
++): Promise<EpisodeLengthStats | null> {
++  try {
++    const url = buildVersionedUrl(repoId, version, "meta/episodes.jsonl");
++    const response = await fetch(url, { cache: "no-store" });
++    if (!response.ok) return null;
++    const allEpisodes: { index: number; length: number }[] = [];
++    for (const line of (await response.text()).split("\n")) {
++      if (!line.trim()) continue;
++      const row = JSON.parse(line) as {
++        episode_index?: unknown;
++        length?: unknown;
++      };
++      const index = Number(row.episode_index);
++      const length = Number(row.length);
++      // Datasets without per-episode lengths stay unavailable rather than
++      // showing a misleading histogram.
++      if (!Number.isFinite(index) || !Number.isFinite(length) || length <= 0) {
++        continue;
++      }
++      allEpisodes.push({ index, length });
++    }
++    return summarizeEpisodeLengths(allEpisodes, fps);
+   } catch {
+     return null;
+   }
+ }
+ 
++/**
++ * Load episode length statistics for every dataset version the viewer parses.
++ * Unsupported versions stay null so the statistics and duration filter hide.
++ */
++export async function loadAllEpisodeLengths(
++  repoId: string,
++  version: string,
++  fps: number,
++): Promise<EpisodeLengthStats | null> {
++  if (version === "v3.0") return loadAllEpisodeLengthsV3(repoId, version, fps);
++  if (version === "v2.1") return loadAllEpisodeLengthsV21(repoId, version, fps);
++  return null;
++}
++
+ /**
+  * Load video frame info for all episodes across all cameras.
+  * Returns camera names + a map of camera → EpisodeFrameInfo[].
