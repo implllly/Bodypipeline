@@ -24,6 +24,7 @@ from pathlib import Path
 from pipeline.shared.collections import dataset_name
 from pipeline.shared.core import DomainError, atomic_json, digest, executable_path, now
 
+from . import static_intervals
 from .datasets import DATA_READY_STATES, TARGET_FORMATS, dataset_for_job
 from .merges import source_snapshot
 from .quality import DOCTOR_CHECK_IDS, doctor_gate
@@ -71,7 +72,7 @@ class TrimRunner:
             raise DomainError("找不到 LeTools Python 运行环境", 503)
         return tool, str(python)
 
-    def provider_policy(self, job) -> dict:
+    def provider_policy(self, job, hook: str = "stationary_trim_policy") -> dict:
         """Trusted Provider configuration; absence means "use dataset units"."""
 
         try:
@@ -79,14 +80,27 @@ class TrimRunner:
             provider = self.runner.catalog.provider(runtime)
         except (DomainError, KeyError, TypeError, ValueError):
             return {}
-        getter = getattr(provider, "stationary_trim_policy", None)
+        getter = getattr(provider, hook, None)
         if not callable(getter):
+            # Providers that only declare the boundary hook still describe
+            # their motion signal in the Profile; reuse it instead of falling
+            # back to per-second unit thresholds they never verified.
+            if hook == "stationary_interval_policy":
+                from .providers.base import configured_interval_policy
+
+                return configured_interval_policy(runtime.profile)
             return {}
         try:
             value = getter(runtime.profile)
         except (DomainError, TypeError, ValueError, AttributeError):
             return {}
         return value if isinstance(value, dict) else {}
+
+    def _interval_policy(self, job, info: dict) -> dict:
+        policy = static_intervals.normalize_policy(
+            self.provider_policy(job, "stationary_interval_policy")
+        )
+        return resolve_policy(policy, info.get("features") or {}, info.get("fps"))
 
     def _policy(self, job, info: dict, overrides: dict | None = None) -> dict:
         base = normalize_policy(self.provider_policy(job))
@@ -543,6 +557,152 @@ class TrimRunner:
         }
         atomic_json(destination / "meta/bodypipeline-stationary-trim.json", lineage)
         atomic_json(work / "trim-lineage.json", lineage)
+        shutil.rmtree(dataset)
+        os.replace(destination, dataset)
+        share_data_tree(work)
+        return {
+            "episodes": int(result["episodes"]),
+            "frames": int(result["frames"]),
+            "summary": summary,
+            "report": result,
+            "policy": policy,
+        }
+
+    def apply_intervals_to_conversion(
+        self, job, work: Path, allocation: str | None, info: dict
+    ) -> dict:
+        """Detect and remove sustained static intervals inside ``work/dataset``.
+
+        This is the whole-recording counterpart of ``apply_to_conversion``. It
+        reuses the same worker: detection returns the kept ranges per source
+        episode, the worker writes the same ranges into a new dataset (splitting
+        one source episode into several output episodes), and the trimmed tree
+        replaces ``work/dataset`` only after deep validation. A fully static
+        episode is kept and marked; a conversion never drops whole episodes.
+        """
+
+        _, python = self._tool()
+        dataset = work / "dataset"
+        policy = self._interval_policy(job, info)
+        preview_dir = work / "trim-intervals"
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        detect_spec = preview_dir / "detect-spec.json"
+        atomic_json(
+            detect_spec,
+            {"mode": "detect-static", "source": str(dataset), "policy": policy},
+        )
+        self.runner.save(job, stage="检测全程静止区间")
+        code, output, err = self.runner.command(
+            [
+                python,
+                str(Path(__file__).with_name("trim_worker.py")),
+                str(detect_spec),
+            ],
+            work,
+            "trim-detect",
+            allocation=allocation,
+        )
+        if code:
+            raise DomainError(
+                "全程静止区间检测失败：" + err.read_text(errors="replace")[-2000:]
+            )
+        try:
+            plan = json.loads(output.read_text())
+        except (OSError, ValueError) as exc:
+            raise DomainError("全程静止区间检测未生成有效 JSON") from exc
+        if not isinstance(plan, dict) or not plan.get("episodes"):
+            raise DomainError("全程静止区间检测没有返回任何 Episode 结果")
+        summary = plan.get("summary") or {}
+        source_episodes = info.get("total_episodes")
+        if summary.get("episodes") != source_episodes:
+            raise DomainError("全程静止区间检测的 Episode 数与转换结果不一致")
+        if int(summary.get("episodes_removed") or 0):
+            raise DomainError("转换内的全程静止区间裁剪不允许删除整段 Episode")
+        invalid = [
+            row
+            for row in plan["episodes"]
+            if row.get("status") in {"invalid", "too_short"}
+        ]
+        if invalid:
+            raise DomainError(
+                "全程静止区间检测失败："
+                + "；".join(
+                    f"Episode {row.get('episode_index')}：{row.get('reason') or row.get('status')}"
+                    for row in invalid[:5]
+                )
+            )
+
+        lineage = {
+            "operation": "static_interval_trim",
+            "entry": "conversion",
+            "job_id": job["id"],
+            "dataset_name": job.get("dataset_name"),
+            "source_format": info.get("codebase_version"),
+            "target_format": job.get("target_format"),
+            "algorithm": static_intervals.ALGORITHM,
+            "policy": policy,
+            "summary": summary,
+            "mapping": None,
+            "episodes": plan["episodes"],
+            "letools": self.settings.letools_bin,
+        }
+        removed = int(summary.get("frames_removed") or 0)
+        if not removed:
+            # Nothing to rewrite. Keep the converted dataset untouched and
+            # record that detection ran, so a later audit can see the outcome.
+            atomic_json(dataset / "meta/bodypipeline-static-intervals.json", lineage)
+            atomic_json(work / "trim-intervals-lineage.json", lineage)
+            share_data_tree(work)
+            return {
+                "episodes": int(source_episodes or 0),
+                "frames": int(info.get("total_frames") or 0),
+                "summary": summary,
+                "report": None,
+                "policy": policy,
+            }
+
+        destination = work / "trimmed"
+        if destination.exists():
+            shutil.rmtree(destination)
+        trim_spec = preview_dir / "trim-spec.json"
+        atomic_json(
+            trim_spec,
+            {
+                "mode": "trim",
+                "source": str(dataset),
+                "destination": str(destination),
+                "fps": info.get("fps"),
+                "policy": policy,
+                "episodes": plan["episodes"],
+            },
+        )
+        self.runner.save(job, stage="删除全程静止区间与全部相机视频")
+        code, report, err = self.runner.command(
+            [python, str(Path(__file__).with_name("trim_worker.py")), str(trim_spec)],
+            work,
+            "trim",
+            allocation=allocation,
+        )
+        if code:
+            raise DomainError(
+                "全程静止区间裁剪失败：" + err.read_text(errors="replace")[-2000:]
+            )
+        try:
+            result = json.loads(report.read_text())
+        except (OSError, ValueError) as exc:
+            raise DomainError("全程静止区间裁剪未生成有效 JSON") from exc
+        if (
+            result.get("validated") is not True
+            or result.get("version") != info.get("codebase_version")
+            or result.get("episodes") != summary.get("output_episodes")
+            or result.get("frames") != summary.get("frames_kept")
+            or result.get("frames_before") != info.get("total_frames")
+        ):
+            raise DomainError("全程静止区间裁剪的 Episode / 帧数与检测计划不一致")
+
+        lineage.update(mapping=result.get("mapping"), episodes=result.get("episodes_detail"))
+        atomic_json(destination / "meta/bodypipeline-static-intervals.json", lineage)
+        atomic_json(work / "trim-intervals-lineage.json", lineage)
         shutil.rmtree(dataset)
         os.replace(destination, dataset)
         share_data_tree(work)

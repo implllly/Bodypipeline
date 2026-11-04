@@ -26,7 +26,7 @@ from pipeline.shared.core import DomainError, atomic_json, executable_path
 from ..conversion_options import normalize_options
 from ..episode_validation import EpisodeValidationError
 from ..quality import robot_profile_blockers, validate_robot_policy
-from .base import annotation_rig, configured_trim_policy
+from .base import annotation_rig, configured_interval_policy, configured_trim_policy
 
 TIANJI_RAW_FORMAT = "tianji_mcap_v1"
 TIANJI_RAW_FORMAT_ALIASES = (TIANJI_RAW_FORMAT, "tianji_ros2_mcap_v1")
@@ -433,6 +433,21 @@ class TianjiProvider:
             thresholds.setdefault("normalized", float(gripper))
         if thresholds:
             policy["unit_thresholds"] = thresholds
+        return policy
+
+    def stationary_interval_policy(self, profile: dict) -> dict:
+        """Keep Tianji's per-frame motion signal for interval detection."""
+
+        signal = self.stationary_trim_policy(profile)
+        keys = (
+            "feature",
+            "candidate_features",
+            "unit_thresholds",
+            "default_threshold",
+            "threshold_per_frame",
+        )
+        policy = {key: signal[key] for key in keys if key in signal}
+        policy.update(configured_interval_policy(profile))
         return policy
 
     def annotation_context(self, profile: dict) -> dict:

@@ -255,6 +255,7 @@ configs/agilex-aloha*.json
 analysis_context(profile)        # 相机安装关系、关节/单位、控制方式等确定性信息
 annotation_context(profile)      # Argus rig（annotation_rig，缺省 teleop_arms）+ 上述相机信息
 stationary_trim_policy(profile)  # 首尾静止帧检测信号与阈值；缺省读取 Profile 的 trim 块
+stationary_interval_policy(profile) # 全程静止区间检测信号与阈值；缺省复用 trim 信号 + static_intervals 时长
 ```
 
 `stationary_trim_policy` 只描述机器人自身运动信号的语义：action 是速度、动作 token
@@ -262,6 +263,14 @@ stationary_trim_policy(profile)  # 首尾静止帧检测信号与阈值；缺省
 `observation.state` 和按单位配置的默认阈值。该策略同时用于独立的首尾裁剪预览和原始
 数据转换表单中的“转换时自动删除首尾静止帧”；Provider 应在写出的 `meta/info.json`
 中声明 `units`，这样单位阈值才能按机器人语义解析；缺少单位时回退到 `default_threshold`。
+
+`stationary_interval_policy` 用于“转换时自动删除全程静止区间”。默认从 Profile 的
+`trim` 块继承运动特征、单位和阈值，再叠加 `static_intervals` 块中的时长参数
+（`min_static_seconds`、`min_motion_seconds`、`jitter_amplitude_seconds`、
+`padding_seconds`、`min_output_seconds`）。阈值或信号语义无法沿用 `trim` 的 Provider
+（例如按帧解释阈值）应显式实现该钩子，而不是让通用任务回退到其他机器人的假设。全程
+裁剪会把删除区间之间的连续片段拆成多个输出 Episode，并按区间直接切分动作列；接入新
+机器人时需要确认其 action 语义允许这种切分，不能把删除区间两侧的帧拼成相邻动作。
 
 Profile 只声明确知事实；未声明相机的安装位置时，Argus 会把依赖它的检查标为"未评估"，不会按型号猜。采集方式不是遥操作时，在 Profile 中声明 `annotation_rig`（`teleop_arms` / `handheld_gripper` / `ego_head`），不要在上层页面或 API 里按型号分支。
 

@@ -10,14 +10,19 @@ Modes:
     Read every episode through the LeTools source plugin and return the frame
     range that would be kept. The source dataset is opened read-only.
 
+``detect-static``
+    The whole-recording counterpart: return every kept range per episode after
+    removing sustained static intervals.
+
 ``trim``
     Write a new dataset into ``destination``: numeric rows are sliced, every
-    camera video is cut to the same frame range, and indices, timestamps,
-    per-episode statistics and dataset metadata are rebuilt. The source dataset
-    is never modified.
+    camera video is cut to the same frame ranges, and indices, timestamps,
+    per-episode statistics and dataset metadata are rebuilt. One source episode
+    may produce several output episodes when the plan contains ``keep_ranges``.
+    The source dataset is never modified.
 
-Both modes use ``pipeline.server.stationary_trim`` so a preview and the written
-dataset are computed by exactly the same code.
+Both detection modes and ``trim`` use the same detection modules so a preview,
+a standalone trim and an in-conversion trim cannot disagree.
 """
 
 from __future__ import annotations
@@ -82,6 +87,32 @@ def detect(spec: dict) -> dict:
     from letools.plugins import open_dataset
 
     from pipeline.server.stationary_trim import detect_dataset
+
+    policy = spec["policy"]
+    source = open_dataset(Path(spec["source"]))
+    values: dict[int, object] = {}
+    frames: dict[int, int] = {}
+    for episode in source.episodes:
+        table = source.read_episode(episode)
+        matrix = _feature_matrix(table, policy["feature"], policy["dimensions"])
+        values[episode.index] = matrix
+        frames[episode.index] = matrix.shape[0]
+    plan = detect_dataset(values, policy)
+    plan.update(
+        source_episode_count=source.metadata.total_episodes,
+        source_frame_count=source.metadata.total_frames,
+        source_format=source.metadata.version,
+        episode_lengths=frames,
+    )
+    return plan
+
+
+def detect_static(spec: dict) -> dict:
+    """Detect whole-recording static intervals for the conversion option."""
+
+    from letools.plugins import open_dataset
+
+    from pipeline.server.static_intervals import detect_dataset
 
     policy = spec["policy"]
     source = open_dataset(Path(spec["source"]))
@@ -226,6 +257,35 @@ def _trim_video(source_video: Path, output: Path, ranges, fps: float) -> None:
     trim(source_video, output, ranges, Fraction(fps).limit_denominator(1_000_000))
 
 
+def _plan_ranges(item: dict, length: int) -> list[tuple[int, int]]:
+    """Return the kept frame ranges for one source episode.
+
+    A plan row may describe a single boundary trim (``keep_start`` /
+    ``keep_stop``) or several ranges (``keep_ranges``). Adjacent ranges are
+    merged so the written data never contains a zero-frame gap.
+    """
+
+    if item.get("status") == "removed":
+        return []
+    raw = item.get("keep_ranges")
+    if raw is None:
+        raw = [[item.get("keep_start", 0), item.get("keep_stop", length)]]
+    ranges: list[tuple[int, int]] = []
+    for value in raw:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ValueError("保留区间必须是 [start, stop] 数组")
+        start, stop = int(value[0]), int(value[1])
+        if not 0 <= start < stop <= length:
+            raise ValueError("保留区间超出 Episode 帧范围")
+        if ranges and start < ranges[-1][1]:
+            raise ValueError("保留区间重叠或未排序")
+        if ranges and start == ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], stop)
+        else:
+            ranges.append((start, stop))
+    return ranges
+
+
 def trim(spec: dict) -> dict:
     import numpy as np
     import pyarrow as pa
@@ -244,20 +304,35 @@ def trim(spec: dict) -> dict:
     version = source.metadata.version
     chunks_size = int(info.get("chunks_size", 1000))
     features = info.get("features") or {}
-    kept: list = []
-    mapping: dict[str, int] = {}
+    # One source episode may become several output episodes after a static
+    # interval is removed. ``outputs`` is the flattened, order-preserving plan.
+    outputs: list[dict] = []
+    mapping: dict[str, list[int]] = {}
     for episode in source.episodes:
         item = plan.get(episode.index)
         if item is None:
             raise ValueError(f"计划缺少 Episode {episode.index} 的裁剪范围")
-        if item["status"] == "removed":
-            continue
-        if not 0 <= item["keep_start"] < item["keep_stop"] <= episode.length:
-            raise ValueError(f"Episode {episode.index} 的裁剪范围无效")
-        mapping[str(episode.index)] = len(kept)
-        kept.append(episode)
-    if not kept:
+        for range_index, (start, stop) in enumerate(
+            _plan_ranges(item, episode.length)
+        ):
+            new_id = len(outputs)
+            outputs.append(
+                {
+                    "source_index": episode.index,
+                    "range_index": range_index,
+                    "start": start,
+                    "stop": stop,
+                    "new_id": new_id,
+                }
+            )
+            mapping.setdefault(str(episode.index), []).append(new_id)
+    if not outputs:
         raise ValueError("裁剪会删除全部 Episode；请关闭“删除整段静止 Episode”")
+    mapping = {
+        key: values[0] if len(values) == 1 else values
+        for key, values in mapping.items()
+    }
+    by_source = {episode.index: episode for episode in source.episodes}
 
     _copy_ancillary(root, destination)
     original_rows = _original_rows(source, version)
@@ -269,12 +344,11 @@ def trim(spec: dict) -> dict:
     stats_rows: list[dict] = []
     details: list[dict] = []
     global_offset = 0
-    for number, episode in enumerate(kept):
-        item = plan[episode.index]
-        new_id = mapping[str(episode.index)]
-        table = source.read_episode(episode).slice(
-            item["keep_start"], item["keep_stop"] - item["keep_start"]
-        )
+    for output in outputs:
+        episode = by_source[output["source_index"]]
+        new_id = output["new_id"]
+        start, stop = output["start"], output["stop"]
+        table = source.read_episode(episode).slice(start, stop - start)
         length = table.num_rows
         for name, values in {
             "episode_index": np.full(length, new_id, dtype=np.int64),
@@ -307,7 +381,7 @@ def trim(spec: dict) -> dict:
             length=length,
         )
         if version == "v3.0":
-            chunk, file = divmod(number, chunks_size)
+            chunk, file = divmod(new_id, chunks_size)
             data_path = info["data_path"].format(chunk_index=chunk, file_index=file)
             row.update(
                 {
@@ -331,8 +405,9 @@ def trim(spec: dict) -> dict:
             {
                 "episode_index": new_id,
                 "source_episode_index": episode.index,
-                "keep_start": item["keep_start"],
-                "keep_stop": item["keep_stop"],
+                "output_range_index": output["range_index"],
+                "keep_start": start,
+                "keep_stop": stop,
                 "length": length,
                 "source_length": episode.length,
             }
@@ -341,35 +416,36 @@ def trim(spec: dict) -> dict:
 
     # ------------------------------------------------------------------ videos
     for camera in source.metadata.video_keys:
-        groups: dict[Path, list] = defaultdict(list)
-        for episode in kept:
+        groups: dict[Path, list[dict]] = defaultdict(list)
+        for output in outputs:
+            episode = by_source[output["source_index"]]
             video = episode.videos.get(camera)
             if video is None:
                 raise ValueError(f"Episode {episode.index} 缺少 {camera} 视频")
-            groups[video.path].append(episode)
-        for number, (path, episodes) in enumerate(groups.items()):
-            item_ranges = [
-                (
-                    episode.videos[camera].start
-                    + plan[episode.index]["keep_start"] / fps,
-                    episode.videos[camera].start
-                    + plan[episode.index]["keep_stop"] / fps,
-                )
-                for episode in episodes
-            ]
+            groups[video.path].append(
+                {
+                    "episode": episode,
+                    "video": video,
+                    "new_id": output["new_id"],
+                    "start": video.start + output["start"] / fps,
+                    "stop": video.start + output["stop"] / fps,
+                }
+            )
+        for number, (path, items) in enumerate(groups.items()):
             if version == "v2.1":
-                for episode, (start, stop) in zip(episodes, item_ranges, strict=True):
-                    new_id = mapping[str(episode.index)]
+                for item in items:
+                    new_id = item["new_id"]
                     output = destination / info["video_path"].format(
                         video_key=camera,
                         episode_index=new_id,
                         episode_chunk=new_id // chunks_size,
                     )
                     output.parent.mkdir(parents=True, exist_ok=True)
-                    _trim_video(path, output, [(start, stop)], fps)
+                    _trim_video(path, output, [(item["start"], item["stop"])], fps)
                 continue
             merged: list[tuple[float, float]] = []
-            for start, stop in item_ranges:
+            for item in items:
+                start, stop = item["start"], item["stop"]
                 if merged and abs(start - merged[-1][1]) < 1e-6:
                     merged[-1] = (merged[-1][0], stop)
                 else:
@@ -382,18 +458,19 @@ def trim(spec: dict) -> dict:
             _trim_video(path, output, merged, fps)
             elapsed = 0.0
             prefix = f"videos/{camera}"
-            for episode, (start, stop) in zip(episodes, item_ranges, strict=True):
-                new_id = mapping[str(episode.index)]
+            for item in items:
+                new_id = item["new_id"]
                 row = rows[new_id]
+                duration = item["stop"] - item["start"]
                 row.update(
                     {
                         f"{prefix}/chunk_index": chunk,
                         f"{prefix}/file_index": file,
                         f"{prefix}/from_timestamp": elapsed,
-                        f"{prefix}/to_timestamp": elapsed + (stop - start),
+                        f"{prefix}/to_timestamp": elapsed + duration,
                     }
                 )
-                elapsed += stop - start
+                elapsed += duration
 
     # -------------------------------------------------------------- metadata
     rows.sort(key=lambda row: row["episode_index"])
@@ -410,19 +487,19 @@ def trim(spec: dict) -> dict:
     for name, bounds in info.get("splits", {"train": f"0:{source.metadata.total_episodes}"}).items():
         start, end = (int(value) for value in bounds.split(":"))
         splits[name] = (
-            f"{sum(episode.index < start for episode in kept)}:"
-            f"{sum(episode.index < end for episode in kept)}"
+            f"{sum(output['source_index'] < start for output in outputs)}:"
+            f"{sum(output['source_index'] < end for output in outputs)}"
         )
     info.update(
-        total_episodes=len(kept),
+        total_episodes=len(outputs),
         total_frames=global_offset,
         splits=splits,
         bodypipeline_revision=str(time.time_ns()),
     )
     if version == "v2.1":
         info.update(
-            total_chunks=(len(kept) + chunks_size - 1) // chunks_size,
-            total_videos=len(kept) * len(source.metadata.video_keys),
+            total_chunks=(len(outputs) + chunks_size - 1) // chunks_size,
+            total_videos=len(outputs) * len(source.metadata.video_keys),
         )
     _write_metadata(destination / "meta/info.json", info)
     common = (
@@ -466,7 +543,8 @@ def trim(spec: dict) -> dict:
     return {
         "validated": True,
         "version": version,
-        "episodes": len(kept),
+        "episodes": len(outputs),
+        "source_episodes": source.metadata.total_episodes,
         "frames": global_offset,
         "frames_before": source.metadata.total_frames,
         "frames_removed": source.metadata.total_frames - global_offset,
@@ -486,6 +564,8 @@ def run(spec_path: str) -> dict:
     mode = spec.get("mode")
     if mode == "detect":
         return detect(spec)
+    if mode == "detect-static":
+        return detect_static(spec)
     if mode == "trim":
         return trim(spec)
     raise ValueError("未知的裁剪任务模式")

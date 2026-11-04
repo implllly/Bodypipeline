@@ -457,3 +457,25 @@ worker 不调用 Doctor 的 `trim_dataset()`，因为该实现覆盖向量动作
 门禁，并在真实 letools 环境中对 v2.1 / v3.0 数据集执行检测和裁剪；
 `tests/fixtures/trim_scenario.py` 生成带首尾静止帧的固定数据集并检查索引、
 时间戳、统计和视频帧数。
+
+## 8. 全程静止区间裁剪
+
+`pipeline.server.static_intervals` 负责全程静止检测：与首尾裁剪共用数值特征、
+单位阈值和 `resolve_policy`，但拥有独立的最短静止时长、抖动容忍、边界余量和最短
+输出片段策略。它返回每个来源 Episode 的保留区间列表，而不是单一首尾范围。
+
+`pipeline.server.trim_worker` 的 `detect-static` 模式读取同一 letools 数据集并输出
+区间计划；`trim` 模式接受 `keep_ranges`，把一个来源 Episode 写成多个输出 Episode。
+数值行、全部相机视频、Episode 编号、`frame_index`、全局 `index`、时间戳、tasks、
+split 和统计都按区间重建。v3.0 共享视频按来源时间范围合并裁剪，v2.1 为每个输出
+Episode 生成独立视频；切点无法安全复用关键帧时重新编码。
+
+转换表单中的“转换时自动删除全程静止区间”调用
+`TrimRunner.apply_intervals_to_conversion`：检测、写入 `work/trimmed`、校验
+Episode / 帧数与计划一致后才原子替换 `work/dataset`。整段静止的 Episode 保留并
+标记。该选项与 `trim_idle_frames` 互斥。
+
+验证：`tests/test_static_intervals.py` 覆盖策略、抖动容忍、整段静止、短片段回退、
+API 互斥与真实 letools 多区间裁剪；`tests/fixtures/static_scenario.py` 构造含中间
+静止段和整段静止 Episode 的 v2.1 / v3.0 数据集，检查拆分长度、索引、状态和视频
+帧数。`tests/test_stationary_trim.py` 另覆盖转换任务内的实际执行与溯源文件。

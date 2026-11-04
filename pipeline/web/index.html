@@ -299,6 +299,8 @@
                   <p class="small muted">自动质检仅生成质量报告，不改变转换结果。取消勾选时仅转换与结构验证，之后仍可直接预览或单独质检。</p>
                   <label class="check-label" for="conversion-trim"><input id="conversion-trim" type="checkbox" />转换时自动删除首尾静止帧</label>
                   <p class="small muted">检测每个 Episode 起点与终点的静止画面并同步裁剪所有相机视频；阈值来自机器人 Profile，整段静止的 Episode 始终保留。演示模式不可用。</p>
+                  <label class="check-label" for="conversion-static"><input id="conversion-static" type="checkbox" />转换时自动删除全程静止区间</label>
+                  <p class="small muted">检测录制中任何位置的持续静止区间（含中间停顿），同步裁剪所有相机视频，并把保留的连续片段拆成多个 Episode。识别的是静止区间，不代表一定是推理等待；阈值与最短时长来自机器人 Profile，整段静止的 Episode 保留并标记。与首尾裁剪不能同时开启，演示模式不可用。</p>
                   <div id="conversion-warning" class="warning" hidden></div>
                   <div class="conversion-submit"><button id="conversion-submit" class="primary" type="submit" disabled>提交批量转换</button><span id="conversion-help" class="small muted">请选择数据集并填写 instruction。</span></div>
                 </form>

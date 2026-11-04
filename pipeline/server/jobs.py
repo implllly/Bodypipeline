@@ -66,6 +66,7 @@ class JobRunner:
         conversion_options=None,
         invalid_episode_policy="fail",
         trim_idle_frames=False,
+        trim_static_intervals=False,
     ):
         return self._enqueue(
             [uid],
@@ -75,6 +76,7 @@ class JobRunner:
             conversion_options=conversion_options,
             invalid_episode_policy=invalid_episode_policy,
             trim_idle_frames=trim_idle_frames,
+            trim_static_intervals=trim_static_intervals,
         )
 
     def enqueue_collection(
@@ -87,6 +89,7 @@ class JobRunner:
         conversion_options=None,
         invalid_episode_policy="fail",
         trim_idle_frames=False,
+        trim_static_intervals=False,
     ):
         if upload_ids is None:
             upload_ids = []
@@ -110,6 +113,7 @@ class JobRunner:
             conversion_options=conversion_options,
             invalid_episode_policy=invalid_episode_policy,
             trim_idle_frames=trim_idle_frames,
+            trim_static_intervals=trim_static_intervals,
         )
 
     def _enqueue(
@@ -123,20 +127,30 @@ class JobRunner:
         conversion_options=None,
         invalid_episode_policy="fail",
         trim_idle_frames=False,
+        trim_static_intervals=False,
     ):
         policy = validate_episode_policy(invalid_episode_policy)
         if (
             target_format not in TARGET_FORMATS
             or type(run_doctor) is not bool
             or type(trim_idle_frames) is not bool
+            or type(trim_static_intervals) is not bool
         ):
             raise DomainError(
-                "目标格式必须为 v3.0 / v2.1，run_doctor / trim_idle_frames 必须为布尔值",
+                "目标格式必须为 v3.0 / v2.1，run_doctor / trim_idle_frames / "
+                "trim_static_intervals 必须为布尔值",
                 400,
             )
-        if trim_idle_frames and self.settings.processing_mode == "demo":
+        if trim_idle_frames and trim_static_intervals:
             raise DomainError(
-                "演示模式不生成 LeRobot 数据集，无法删除首尾静止帧", 400
+                "“删除首尾静止帧”与“删除全程静止区间”不能同时开启", 400
+            )
+        if (
+            (trim_idle_frames or trim_static_intervals)
+            and self.settings.processing_mode == "demo"
+        ):
+            raise DomainError(
+                "演示模式不生成 LeRobot 数据集，无法删除静止帧", 400
             )
         if (
             not upload_ids
@@ -198,6 +212,11 @@ class JobRunner:
                     **({"conversion_options": options} if options else {}),
                     **({"invalid_episode_policy": policy} if policy != "fail" else {}),
                     **({"trim_idle_frames": True} if trim_idle_frames else {}),
+                    **(
+                        {"trim_static_intervals": True}
+                        if trim_static_intervals
+                        else {}
+                    ),
                     "pipeline": "runtime-provider-v2",
                     "encoding": "libx264-yuv420p",
                     "letools": "1c417cc9c205f85cd01a5e5860646f1594738354",
@@ -248,6 +267,7 @@ class JobRunner:
                 "instruction": instruction,
                 "conversion_options": options,
                 "trim_idle_frames": trim_idle_frames,
+                "trim_static_intervals": trim_static_intervals,
                 "capture_mode": manifests[0]["capture_mode"],
                 "error": None,
             }
@@ -865,6 +885,21 @@ class JobRunner:
                     trim_summary=trimmed["summary"],
                     trim_report=trimmed["report"],
                     trim_policy=trimmed["policy"],
+                    episode_count=expected_episodes,
+                    frame_count=expected_frames,
+                )
+            elif job.get("trim_static_intervals"):
+                self.save(job, stage="检测并删除全程静止区间")
+                trimmed = self.trims.apply_intervals_to_conversion(
+                    job, work, allocation, info
+                )
+                expected_episodes = trimmed["episodes"]
+                expected_frames = trimmed["frames"]
+                self.save(
+                    job,
+                    interval_summary=trimmed["summary"],
+                    interval_report=trimmed["report"],
+                    interval_policy=trimmed["policy"],
                     episode_count=expected_episodes,
                     frame_count=expected_frames,
                 )

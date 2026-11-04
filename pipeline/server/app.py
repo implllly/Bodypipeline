@@ -42,6 +42,7 @@ class ConversionRequest(BaseModel):
     conversion_options: ConversionOptions = Field(default_factory=ConversionOptions)
     invalid_episode_policy: InvalidEpisodePolicy = "fail"
     trim_idle_frames: StrictBool = False
+    trim_static_intervals: StrictBool = False
 
 
 class BatchConversionRequest(ConversionRequest):

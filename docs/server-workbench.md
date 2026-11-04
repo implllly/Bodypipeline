@@ -107,7 +107,7 @@ Server 页面用于管理原始数据、提交批量转换、删除或合并数�
    - LeRobot `v2.1`。
 4. 选择不合格采集处理策略：默认“全部通过才转换”；也可选择“跳过不合格采集，转换合格部分”。
 5. 选择是否在转换完成后自动运行 Doctor。
-6. 按需勾选“转换时自动删除首尾静止帧”（所有机器人通用，演示模式不可用）。
+6. 按需勾选“转换时自动删除首尾静止帧”或“转换时自动删除全程静止区间”（所有机器人通用，二者互斥，演示模式不可用）。
 7. 提交任务。
 
 要求：
@@ -122,7 +122,8 @@ Server 页面用于管理原始数据、提交批量转换、删除或合并数�
 不合格采集策略由通用 Server 批处理流程执行，所有 RobotProvider 共用。API 参数
 `invalid_episode_policy` 接受 `fail`（默认）或 `skip`，单条和批量转换都支持；策略不同会产生不同任务。
 首尾裁剪通过独立的布尔参数 `trim_idle_frames`（默认 `false`）开关，不进入机器人特有的
-`conversion_options`；只有勾选时任务去重键才包含该选项。
+`conversion_options`；只有勾选时任务去重键才包含该选项。全程静止区间裁剪使用
+`trim_static_intervals`（默认 `false`），二者互斥，同样只在勾选时进入去重键。
 只有 Provider 明确抛出的 `EpisodeValidationError` 可以跳过，包括已识别的数据字段缺失、
 时序缺口、数值或图像内容不合格。文件摘要变化、配置不匹配、工具缺失、超时、I/O 或程序异常
 仍使整个任务失败。转换后的深度验证和 Doctor 流程继续执行，不在此策略下逐条跳过。
@@ -272,6 +273,22 @@ work/<job_id>/
 任务复用现有后台串行队列、超时与 Slurm 配置；可在创建时选择裁剪后运行 Doctor，Doctor 报告和裁剪摘要一并记录。来源快照、检测策略、每个 Episode 的保留范围和结果映射保存在 `dataset/meta/bodypipeline-stationary-trim.json` 与工作目录的 `lineage.json`。
 
 接口：`GET /api/trim-candidates` 获取候选数据集，`GET /api/jobs/{id}/trim-policy` 获取 Provider 解析后的检测特征、FPS 与阈值；`POST /api/jobs/{id}/trim-previews` 提交预览，`GET /api/trim-previews/{id}` 读取结果，`POST /api/jobs/{id}/trims` 接收 `preview_id`、`name` 和 `run_doctor` 并返回 202。相同来源、预览计划、名称和 Doctor 选项的排队或运行中请求会复用同一任务。
+
+### 2.7 删除全程静止区间（所有机器人通用）
+
+原始数据转换表单另提供“转换时自动删除全程静止区间”复选项，用于删除录制中任何位置的持续静止画面，包括开头、中间和结尾。它解决的是“动作 A → 长时间静止 → 动作 B”这类数据：这些静止段不属于首尾边界，首尾裁剪按设计不会删除。识别结果是“持续静止区间”，不代表一定能确认它由推理等待造成；任务摘要和溯源也使用同样的措辞。
+
+该选项与“删除首尾静止帧”互斥：前端勾选一个会取消另一个，后端同时收到两个 `true` 时返回 400。演示模式不生成 LeRobot 数据集，因此不可用。转换任务在 Provider 写入元数据后执行 `detect-static`，确认计划后把保留区间写入 `work/trimmed`，校验输出 Episode / 帧数与计划一致再原子替换 `work/dataset`。
+
+检测规则：
+
+- 使用 Provider / Profile 指定的运动特征和单位阈值；Profile 未声明 `static_intervals` 时复用 `trim` 块的运动信号，但使用全程检测自己的时长默认值（默认最长静止门槛 2 秒，不复用首尾的 0.5 秒）。
+- 任一维度超过阈值即视为运动；短于最小时长且累计位移落在抖动范围内的运动突发会被忽略，避免零星抖动把长静止段切断，但短而明显的真实动作仍会切开静止段。
+- 每个删除区间在靠近运动的一侧保留边界余量；录制首尾边界不需要余量。
+- 删除后若保留片段短于最短输出时长，则取消相邻的一段删除，而不是静默丢弃或保留极短片段。
+- 整段静止的 Episode 保留并标记，绝不因该选项消失。
+
+删除中间静止段后，一个来源 Episode 可能输出多个 Episode。每个输出 Episode 只包含单个连续来源区间：数值帧、全部相机视频、`frame_index`、全局 `index`、时间戳、tasks、split 和统计都会重建。动作列按区间直接切片，删除区间两侧的帧不会成为相邻的“下一帧动作”；每个输出 Episode 的最后一帧保留来源动作标签，作为该 Episode 的终止动作。来源数据集保持不变。任务字段为 `trim_static_intervals`、`interval_summary`、`interval_policy` 和 `interval_report`，溯源写入 `dataset/meta/bodypipeline-static-intervals.json` 与工作目录的 `trim-intervals-lineage.json`。
 
 ## 3. 预览与质检
 

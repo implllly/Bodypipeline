@@ -719,8 +719,8 @@ def test_real_preview_then_trim_job_produces_a_new_dataset(
 
 
 # ------------------------------------------------------- conversion integration
-def idle_capture(settings_factory, *, frames=90, head=20, tail=20):
-    """Build an AgileX-shaped capture whose first and last frames never move."""
+def capture_with_positions(settings_factory, positions, *, session_id="idle-session"):
+    """Build an AgileX-shaped capture with explicit joint positions per frame."""
 
     client = settings_factory("client")
     profile = client.profile()
@@ -736,15 +736,7 @@ def idle_capture(settings_factory, *, frames=90, head=20, tail=20):
     (episode / "instructions.json").write_text(
         json.dumps({"full-instructions": ["fold cloth"]})
     )
-    active_end = frames - tail
-    last_active = round(0.05 * (active_end - head), 6)
-    for index in range(frames):
-        if index < head:
-            position = [0.0] * 7
-        elif index < active_end:
-            position = [round(0.05 * (index - head + 1), 6)] * 7
-        else:
-            position = [last_active] * 7
+    for index, position in enumerate(positions):
         stamp = f"{(index * 1_000_000_000 // fps) / 1e9:.9f}"
         for role in roles:
             (episode / "arm/jointState" / role / f"{stamp}.json").write_text(
@@ -768,7 +760,7 @@ def idle_capture(settings_factory, *, frames=90, head=20, tail=20):
         )
     manifest = {
         "manifest_version": 1,
-        "session_id": "idle-session",
+        "session_id": session_id,
         "robot_id": client.robot_id,
         "project_id": client.project_id,
         "control_mode": "teleoperation",
@@ -781,6 +773,42 @@ def idle_capture(settings_factory, *, frames=90, head=20, tail=20):
         "files": files,
     }
     return root, manifest
+
+
+def idle_capture(settings_factory, *, frames=90, head=20, tail=20):
+    """Build an AgileX-shaped capture whose first and last frames never move."""
+
+    active_end = frames - tail
+    last_active = round(0.05 * (active_end - head), 6)
+    positions = []
+    for index in range(frames):
+        if index < head:
+            position = [0.0] * 7
+        elif index < active_end:
+            position = [round(0.05 * (index - head + 1), 6)] * 7
+        else:
+            position = [last_active] * 7
+        positions.append(position)
+    return capture_with_positions(settings_factory, positions)
+
+
+def static_interval_capture(
+    settings_factory, *, head=60, motion=30, middle=60, session_id="static-session"
+):
+    """Move, hold still long enough to remove, then move again."""
+
+    positions = [[0.0] * 7 for _ in range(head)]
+    level = 0.0
+    for index in range(motion):
+        level = round(0.05 * (index + 1), 6)
+        positions.append([level] * 7)
+    positions.extend([list(positions[-1]) for _ in range(middle)])
+    for _ in range(motion):
+        level = round(level + 0.05, 6)
+        positions.append([level] * 7)
+    return capture_with_positions(
+        settings_factory, positions, session_id=session_id
+    )
 
 
 def upload_raw(ingest, raw, manifest):
@@ -866,5 +894,55 @@ def test_real_conversion_trims_boundary_idle_frames(
     assert lineage["entry"] == "conversion"
     assert lineage["summary"]["frames_removed"] == 28
     # The raw capture is a separate dataset and is never rewritten by trimming.
+    assert all((raw / entry["path"]).is_file() for entry in manifest["files"])
+
+
+def test_real_conversion_removes_mid_recording_static_intervals(
+    settings_factory, letools_binary
+):
+    raw, manifest = static_interval_capture(settings_factory)
+    settings = settings_factory(
+        "server",
+        processing_mode="real",
+        letools_bin=letools_binary,
+        min_free_bytes=0,
+        command_timeout=600,
+    )
+    app = create_app(settings, background=False)
+    ingest = app.state.ingest
+    uid = upload_raw(ingest, raw, manifest)
+    job = app.state.runner.enqueue(
+        uid,
+        "v3.0",
+        run_doctor=False,
+        trim_static_intervals=True,
+    )
+    assert job["trim_static_intervals"] is True
+    assert job["trim_idle_frames"] is False
+    assert app.state.runner.tick() is True
+    result = ingest.store.get("job", job["id"])
+    assert result["state"] == "CONVERTED", result
+    summary = result["interval_summary"]
+    assert summary["frames_removed"] > 0
+    assert summary["output_episodes"] == 2
+    assert result["episode_count"] == 2
+    assert result["frame_count"] == summary["frames_kept"]
+    assert result["interval_report"]["validated"] is True
+    assert result["interval_report"]["frames_removed"] == summary["frames_removed"]
+    assert result["interval_policy"]["feature"] == "observation.state"
+    assert result["interval_policy"]["min_static_seconds"] == 2.0
+    output = Path(result["dataset_path"])
+    info = json.loads((output / "meta/info.json").read_text())
+    assert info["codebase_version"] == "v3.0"
+    assert info["total_episodes"] == 2
+    assert info["total_frames"] == summary["frames_kept"]
+    lineage = json.loads(
+        (output / "meta/bodypipeline-static-intervals.json").read_text()
+    )
+    assert lineage["entry"] == "conversion"
+    assert lineage["algorithm"] == "static-intervals-v1"
+    assert lineage["summary"]["frames_removed"] == summary["frames_removed"]
+    assert len(lineage["episodes"]) == 2
+    # The raw capture is only read, never mutated by the in-conversion trim.
     assert all((raw / entry["path"]).is_file() for entry in manifest["files"])
 
