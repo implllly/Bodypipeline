@@ -10,6 +10,26 @@ TARGET_FORMATS = ("v3.0", "v2.1")
 DATA_READY_STATES = {"CONVERTED", "SYNTHETIC_READY", "QUARANTINED", "COMPLETED"}
 
 
+def require_mutable_dataset(settings, path, job=None, *, store=None, jobs=None):
+    """Do not mutate published deliveries, including aliases/manual imports."""
+    resolved = Path(path).resolve()
+    protected = (job or {}).get("immutable_delivery") or any(
+        resolved == Path(s["root"]).resolve()
+        or resolved.is_relative_to(Path(s["root"]).resolve())
+        or Path(s["root"]).resolve().is_relative_to(resolved)
+        for s in settings.delivery_sources
+    )
+    if not protected and (store is not None or jobs is not None):
+        for row in jobs if jobs is not None else store.all("job"):
+            if row.get("immutable_delivery") and row.get("dataset_path"):
+                source = Path(row["dataset_path"]).resolve()
+                if resolved == source or resolved.is_relative_to(source) or source.is_relative_to(resolved):
+                    protected = True
+                    break
+    if protected:
+        raise DomainError("外部交付数据集为只读，不允许原地修改或删除；请生成副本", 403)
+
+
 def _has_metadata(path: Path) -> bool:
     info = path / "meta/info.json"
     return (

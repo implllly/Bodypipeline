@@ -191,6 +191,16 @@ class RecycleBin:
             ):
                 raise DomainError("只能操作已在回收站中的 Episode", 409)
             if action == "purge":
+                from .datasets import require_mutable_dataset
+
+                job_id = repo.removeprefix("bp/")
+                try:
+                    job = self.store.get("job", job_id) if repo.startswith("bp/") else None
+                except DomainError as exc:
+                    if exc.code != 404:
+                        raise
+                    job = None
+                require_mutable_dataset(self.settings, path, job, store=self.store)
                 tool = executable_path(self.settings.letools_bin)
                 if not tool:
                     raise DomainError("未安装数据清理所需的 letools 运行环境", 503)

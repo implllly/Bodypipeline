@@ -252,6 +252,13 @@
               </form>
             </section>
             <section class="panel" data-server-panel="uploads" hidden>
+              <div class="panel-heading"><h2>外部数据增量登记</h2><span class="step">READY DELIVERIES</span></div>
+              <p class="small muted">只扫描已配置交付目录中带 READY 的完整批次；验证后原地登记为只读 LeRobot 数据集，不执行机器人转换。</p>
+              <div class="conversion-submit"><button id="delivery-scan" type="button" class="secondary">立即扫描 / 重试</button><span id="delivery-summary" class="small muted">正在读取扫描状态…</span></div>
+              <div id="delivery-sources" class="small muted"></div>
+              <div class="table-scroll"><table><thead><tr><th>交付批次</th><th>状态</th><th>说明</th></tr></thead><tbody id="delivery-list"></tbody></table></div>
+            </section>
+            <section class="panel" data-server-panel="uploads" hidden>
               <div class="panel-heading"><h2>原始数据集</h2><span class="step">SOURCE DATA</span></div>
               <div class="table-scroll"><table>
                 <thead><tr><th>数据集</th><th>来源</th><th>数据规模</th><th>已接收 episodes</th><th>操作</th></tr></thead>

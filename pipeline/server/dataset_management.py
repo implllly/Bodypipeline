@@ -266,7 +266,14 @@ class DatasetManager:
         return snapshot
 
     def _validate(self, records, paths, snapshot=None, context=None):
+        from .datasets import require_mutable_dataset
+
         snapshot = self._snapshot() if snapshot is None else snapshot
+        for path in paths:
+            require_mutable_dataset(self.settings, path, jobs=snapshot["job"])
+        for kind, row in records:
+            if kind == "job" and row.get("immutable_delivery"):
+                raise DomainError("外部交付数据集为只读，不允许删除", 403)
         context = self._safety_context() if context is None else context
         candidates = {self._safe(p, context) for p in paths}
         paths = sorted(
@@ -577,6 +584,9 @@ class DatasetManager:
                     self.store.put("dataset_deletion", operation["id"], operation)
                 # Keep dataset locks during I/O; tombstones reject new consumers.
                 for target in operation["targets"]:
+                    from .datasets import require_mutable_dataset
+
+                    require_mutable_dataset(self.settings, target["path"], store=self.store)
                     path, trash = (
                         self._safe(Path(target["path"])),
                         self._safe(Path(target["trash"])),

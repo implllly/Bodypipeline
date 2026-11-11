@@ -90,6 +90,11 @@ class Settings:
     root: Path = field(default_factory=lambda: Path(".runtime/client").resolve())
     data_root: Path | None = None
     import_roots: list[Path] = field(default_factory=list)
+    # Complete external LeRobot deliveries; no capture/conversion Runtime implied.
+    delivery_sources: list[dict] = field(default_factory=list)
+    delivery_scan_seconds: float = 60.0
+    delivery_retry_seconds: float = 300.0
+    delivery_scan_batch_limit: int = 10
     token: str = ""
     login_password: str = ""
     device_token: str = ""
@@ -160,6 +165,9 @@ class Settings:
     replay: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        from .delivery_config import validate_delivery_config
+
+        validate_delivery_config(self)
         # A price table is written by hand in server.json. Validate it once,
         # where the fix is obvious, rather than when a paid run is refused.
         self.argus_prices = validate_argus_prices(self.argus_prices)

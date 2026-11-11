@@ -1,0 +1,13 @@
+{
+  "root": ".runtime/server",
+  "processing_mode": "real",
+  "auto_process": false,
+  "import_roots": ["/srv/bodypipeline-imports"],
+  "delivery_sources": [
+    {"root": "/srv/bodypipeline-imports/sim", "robot_type": "sim"}
+  ],
+  "delivery_scan_seconds": 60,
+  "delivery_retry_seconds": 300,
+  "delivery_scan_batch_limit": 10,
+  "viewer_origin": "http://127.0.0.1:8082"
+}

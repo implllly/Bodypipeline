@@ -22,6 +22,7 @@ from .checks import QualityRunner
 from .conversion_options import ConversionOptions
 from .dataset_management import DELETION_STATES, DatasetManager
 from .datasets import TARGET_FORMATS, dataset_for_job
+from .deliveries import DeliveryScanner
 from .episode_validation import InvalidEpisodePolicy
 from .imports import ImportService
 from .ingest import IngestService
@@ -214,6 +215,7 @@ def create_app(settings, background=True):
     annotations = AnnotationRunner(settings, ingest.store, runtimes)
     viewer = ViewerManager(settings, ingest.store)
     datasets = DatasetManager(settings, runner, viewer)
+    deliveries = DeliveryScanner(settings, imports, datasets, runner)
     trims = runner.trims
     # Enqueueing consumers and marking deletions share one admission lock.
     checks.lock = analyses.lock = annotations.lock = runner.lock
@@ -262,6 +264,17 @@ def create_app(settings, background=True):
             except asyncio.TimeoutError:
                 pass
 
+    async def delivery_loop():
+        while not stopping.is_set():
+            try:
+                await asyncio.to_thread(deliveries.tick)
+            except Exception:
+                log.exception("delivery scanner tick failed")
+            try:
+                await asyncio.wait_for(stopping.wait(), 1)
+            except asyncio.TimeoutError:
+                pass
+
     @asynccontextmanager
     async def lifespan(app):
         lock.acquire()
@@ -278,6 +291,7 @@ def create_app(settings, background=True):
                 asyncio.create_task(loop()),
                 asyncio.create_task(annotation_loop()),
                 asyncio.create_task(viewer_loop()),
+                asyncio.create_task(delivery_loop()),
             ]
             if background
             else []
@@ -286,6 +300,7 @@ def create_app(settings, background=True):
             yield
         finally:
             stopping.set()
+            deliveries.stopping.set()
             runner.shutdown_requested.set()
             annotations.shutdown_requested.set()
             if tasks:
@@ -296,6 +311,7 @@ def create_app(settings, background=True):
     app = FastAPI(title="Embodied Pipeline Server", lifespan=lifespan)
     app.state.ingest, app.state.runner, app.state.viewer = ingest, runner, viewer
     app.state.imports = imports
+    app.state.deliveries = deliveries
     app.state.checks = checks
     app.state.analyses = analyses
     app.state.annotations = annotations
@@ -348,6 +364,14 @@ def create_app(settings, background=True):
             return imports.import_path(
                 body.path, body.robot_type, runtime_id=body.runtime_id
             )
+
+    @app.get("/api/deliveries")
+    def delivery_status():
+        return deliveries.status()
+
+    @app.post("/api/deliveries/scan", status_code=202)
+    def request_delivery_scan():
+        return deliveries.request()
 
     @app.get("/api/datasets")
     def managed_datasets():

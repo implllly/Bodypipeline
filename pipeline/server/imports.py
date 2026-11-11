@@ -84,6 +84,8 @@ class ImportService:
         runtime_id: str | None = None,
     ):
         path = self.resolve(raw_path)
+        if any(path.is_relative_to(Path(s["root"])) for s in self.settings.delivery_sources):
+            raise DomainError("交付目录必须通过 READY 扫描校验登记，不能手动绕过", 403)
         override = None
         if robot_type_override is not None and robot_type_override.strip():
             override = robot_type(robot_type_override.strip())
@@ -114,7 +116,9 @@ class ImportService:
         ]
         return candidates[0] if len(candidates) == 1 else None
 
-    def _import_lerobot(self, path: Path, override: str | None, runtime=None):
+    def _import_lerobot(
+        self, path: Path, override: str | None, runtime=None, *, delivery=None
+    ):
         info_path = path / "meta/info.json"
         if info_path.is_symlink():
             raise DomainError("LeRobot meta/info.json 不能是符号链接", 400)
@@ -143,7 +147,9 @@ class ImportService:
                 f"机器人类型冲突：目录声明 {detected}，导入请求为 {override}", 400
             )
         detected = override or (robot_type(detected) if detected else "unknown")
-        runtime = runtime or self._known_runtime(detected)
+        # A finished delivery is import-only, not an implicit conversion binding.
+        if delivery is None:
+            runtime = runtime or self._known_runtime(detected)
         if runtime is not None and detected != runtime.robot_type:
             raise DomainError(
                 f"LeRobot robot_type={detected!r} 与 Runtime {runtime.id!r} 不匹配", 400
@@ -160,6 +166,9 @@ class ImportService:
                 "total_frames": total_frames,
             }
         )[:32]
+        if delivery is not None:
+            name = dataset_name(delivery["dataset_id"])
+            key = digest({"kind": "lerobot-delivery", "delivery_id": delivery["delivery_id"]})[:32]
         with self.lock:
             try:
                 row = self.store.get("job", key)
@@ -205,6 +214,15 @@ class ImportService:
                     "robot_type": detected,
                 },
             }
+            if delivery is not None:
+                row.update(
+                    immutable_delivery=True,
+                    delivery_id=delivery["delivery_id"],
+                    logical_dataset_id=delivery["dataset_id"],
+                    feature_schema_id=delivery["feature_schema_id"],
+                    delivery_manifest_sha256=delivery["manifest_sha256"],
+                    stage="外部 LeRobot v3 交付已校验登记（只读）",
+                )
             self.store.put("job", key, row)
             return self._lerobot_response(row)
 

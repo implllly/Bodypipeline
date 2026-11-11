@@ -859,6 +859,9 @@ class TrimRunner:
             source_path = Path(described["dataset_path"])
             snapshot = source_snapshot(source_path)
             if in_place:
+                from .datasets import require_mutable_dataset
+
+                require_mutable_dataset(self.settings, source_path, source_job, store=self.store)
                 root = self.settings.data_root
                 if root is not None and not source_path.is_relative_to(root):
                     raise DomainError(
@@ -1068,6 +1071,9 @@ class TrimRunner:
             raise InterruptedError("Worker 收到停止请求")
         backup: Path | None = None
         if in_place:
+            from .datasets import require_mutable_dataset
+
+            require_mutable_dataset(self.settings, source, store=self.store)
             # Keep the previous lineage so repeated in-place trims stay traceable.
             lineage = self._lineage_with_history(source, lineage_name, lineage)
             atomic_json(dataset / "meta" / lineage_name, lineage)
@@ -1231,6 +1237,10 @@ class TrimRunner:
         save(job, state="RUNNING", stage="核验来源与手动删除区间", started_at=now())
         try:
             source = Path(job["source_path"])
+            if job.get("in_place"):
+                from .datasets import require_mutable_dataset
+
+                require_mutable_dataset(self.settings, source, store=self.store)
             with dataset_lock(self.store, self._key(source)):
                 snapshot = source_snapshot(source)
                 stored = job.get("source_snapshot") or {}

@@ -711,7 +711,7 @@ async function refreshDatasetManagement() {
 // panel, while candidates and annotations are only needed by the panel that
 // shows them.
 const SERVER_PANEL_DATA = {
-  uploads: ["collections", "jobs"],
+  uploads: ["collections", "jobs", "deliveries"],
   convert: ["collections", "jobs", "versionCandidates", "trimCandidates"],
   results: ["jobs", "viewer"],
   merge: ["jobs", "mergeCandidates"],
@@ -725,6 +725,7 @@ const SERVER_DATA_REQUESTS = {
   versionCandidates: "/api/version-conversion-candidates",
   trimCandidates: "/api/trim-candidates",
   annotations: "/api/annotations",
+  deliveries: "/api/deliveries",
 };
 async function refresh() {
   if (!config || polling) return;
@@ -761,6 +762,7 @@ async function refresh() {
         else if (key === "versionCandidates") serverVersionConversionCandidates = value;
         else if (key === "trimCandidates") serverTrimCandidates = value;
         else if (key === "annotations") serverAnnotations = value;
+        else if (key === "deliveries") renderDeliveries(value);
       });
       renderServer(serverUploads, serverJobs);
       if (
@@ -1060,6 +1062,21 @@ function updateVersionConversionSelection() {
         ? "请填写新数据集名称。"
         : `将 ${source.source_format} 转换为 ${source.target_format}，来源数据集保持不变。`;
 }
+function renderDeliveries(value) {
+  $("delivery-scan").disabled = !value.enabled;
+  $("delivery-summary").textContent = value.enabled
+    ? `每 ${value.scan_seconds} 秒扫描 · 已登记 ${value.counts.REGISTERED || 0} · 校验中 ${value.counts.VALIDATING || 0} · 失败 ${value.counts.FAILED || 0}${value.requested ? " · 已请求扫描" : ""}`
+    : "尚未配置 delivery_sources，自动扫描未启用。";
+  $("delivery-sources").textContent = value.sources.map((s) => `${s.robot_type} · ${s.root} · ${s.error || "目录可访问"}`).join("；");
+  const labels = {REGISTERED: "已登记（只读）", VALIDATING: "校验中", FAILED: "失败 / 等待重试"};
+  $("delivery-list").innerHTML = value.deliveries.map((row) => `<tr><td>${esc(row.delivery_id || row.batch_path)}<span class="sub">${esc(row.dataset_id || "")}</span></td><td>${esc(labels[row.state] || row.state)}</td><td>${esc(row.conflict || row.error || (row.job_id ? "已出现在转换结果中，可预览和质检" : ""))}</td></tr>`).join("") || '<tr><td colspan="3" class="muted">尚无带 READY 的交付批次。</td></tr>';
+}
+$("delivery-scan").onclick = () => action(async () => {
+  await api("/api/deliveries/scan", "POST", {});
+  notice("已请求后台扫描；失败批次将重新校验，不会重复登记已完成批次。");
+  renderDeliveries(await api("/api/deliveries"));
+});
+
 $("import-form").onsubmit = (event) => {
   event.preventDefault();
   action(async () => {
