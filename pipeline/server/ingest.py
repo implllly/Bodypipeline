@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from pipeline.shared.collections import collection_metadata, dataset_name
@@ -39,12 +40,23 @@ class IngestService:
         self.settings = settings
         self.store = Store(settings.root / "state", legacy_name="server.sqlite")
         self.lock = threading.RLock()
+        self.upload_locks = {}
+        self.upload_locks_guard = threading.Lock()
         self.catalog = RuntimeCatalog(settings)
         for name in ("incoming", "raw", "work", "reports"):
             (settings.root / name).mkdir(parents=True, exist_ok=True)
         if settings.data_root is not None and not settings.data_root.is_dir():
             raise DomainError("数据根目录不存在，请先创建并挂载 data_root", 503)
         self._manifest_cache = {}
+
+    @contextmanager
+    def _upload_lock(self, uid):
+        # Per-upload serialization keeps one stalled storage operation from
+        # blocking unrelated manifests and uploads behind the global lock.
+        with self.upload_locks_guard:
+            lock = self.upload_locks.setdefault(uid, threading.RLock())
+        with lock:
+            yield
 
     def validate_manifest(
         self,
@@ -140,7 +152,7 @@ class IngestService:
             }
         )[:32]
         manifest_hash = digest(m)
-        with self.lock:
+        with self._upload_lock(key):
             try:
                 row = self.store.get("upload", key)
             except DomainError as exc:
@@ -226,7 +238,7 @@ class IngestService:
                 "raw_path": str(Path(raw_path).resolve()),
             }
         )[:32]
-        with self.lock:
+        with self._upload_lock(key):
             try:
                 row = self.store.get("upload", key)
             except DomainError as exc:
@@ -291,8 +303,12 @@ class IngestService:
 
     def manifest(self, row, fresh=False):
         key = row["manifest_hash"]
-        if not fresh and key in self._manifest_cache:
-            return self._manifest_cache[key]
+        if not fresh:
+            # Conversion workers read manifests concurrently.
+            with self.lock:
+                cached = self._manifest_cache.get(key)
+            if cached is not None:
+                return cached
         inline = row.get("manifest_inline")
         if isinstance(inline, dict):
             data = inline
@@ -306,13 +322,14 @@ class IngestService:
             data = json.loads(source.read_text())
         if digest(data) != key:
             raise DomainError("Manifest 摘要不匹配", 422)
-        if len(self._manifest_cache) >= 4:
-            self._manifest_cache.pop(next(iter(self._manifest_cache)))
-        self._manifest_cache[key] = data
+        with self.lock:
+            if len(self._manifest_cache) >= 4:
+                self._manifest_cache.pop(next(iter(self._manifest_cache)))
+            self._manifest_cache[key] = data
         return data
 
     def offsets(self, uid):
-        with self.lock:
+        with self._upload_lock(uid):
             row = self.store.get("upload", uid)
             if row["state"] in {"DELETING", "DELETE_FAILED", "DELETED"}:
                 raise DomainError("原始采集已删除或正在删除", 410)
@@ -331,7 +348,7 @@ class IngestService:
             }
 
     def chunk(self, uid, file_index, offset, expected_hash, data):
-        with self.lock:
+        with self._upload_lock(uid):
             row = self.store.get("upload", uid)
             if row["state"] != "UPLOADING":
                 raise DomainError("上传已提交或正在提交")
@@ -378,7 +395,7 @@ class IngestService:
             return {"offset": p.stat().st_size}
 
     def reset_file(self, uid, index):
-        with self.lock:
+        with self._upload_lock(uid):
             row = self.store.get("upload", uid)
             if row["state"] != "UPLOADING":
                 raise DomainError("仅未提交上传可以重置损坏文件")
@@ -392,7 +409,7 @@ class IngestService:
             return {"offset": 0}
 
     def complete(self, uid):
-        with self.lock:
+        with self._upload_lock(uid):
             row = self.store.get("upload", uid)
             if row["state"] in {"DELETING", "DELETE_FAILED", "DELETED"}:
                 raise DomainError("原始采集已删除或正在删除", 410)

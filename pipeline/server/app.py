@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from pipeline.shared.collections import collection_metadata, group_uploads
 from pipeline.shared.core import DomainError, ProcessLock, executable_path
 from pipeline.shared.security import install_security
-from pipeline.shared.web import mount_ui
+from pipeline.shared.web import ListCompressionMiddleware, mount_ui
 
 from .analyses import AnalysisRunner
 from .annotations import AnnotationRunner
@@ -32,6 +32,44 @@ from .storage import storage_path
 from .subtask_review import DraftRequest, RevisionExportRequest, SubtaskReview
 from .task_annotations import TemplateLibrary, TemplateRequest
 from .viewer import ViewerManager
+
+# Fields only the per-job detail view needs. They are the bulk of the listing
+# response and are re-fetched from /api/jobs/{id} when a job is opened.
+JOB_SUMMARY_OMIT = (
+    "robot_report",
+    "alignment_report",
+    "episode_diagnostics",
+    "source_manifest_hashes",
+    "profile",
+    "accepted_capture_profile_hashes",
+    "doctor_report",
+    "quality_gate",
+    "upload_ids",
+    "trim_report",
+    "trim_policy",
+    "merge_sources",
+    "source_description",
+    "source_snapshot",
+)
+
+# Keep the episode picker and Runtime checks intact; full manifests and paths
+# belong to the existing upload/detail APIs, not every workbench poll.
+COLLECTION_UPLOAD_FIELDS = frozenset(
+    {
+        "id",
+        "state",
+        "runtime_id",
+        "robot_type",
+        "robot_id",
+        "capture_mode",
+        "created_at",
+        "total_bytes",
+        "file_count",
+        "import_path",
+        "source_kind",
+        "conversion_blockers",
+    }
+)
 
 
 class ConversionRequest(BaseModel):
@@ -136,6 +174,17 @@ class TrimRequest(BaseModel):
     preview_id: str = Field(min_length=1, max_length=128)
     name: str | None = Field(default=None, min_length=1, max_length=2000)
     run_doctor: StrictBool = True
+
+
+class ManualTrimRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    episode_index: StrictInt = Field(ge=0)
+    remove_ranges: list[tuple[StrictInt, StrictInt]] = Field(
+        min_length=1, max_length=100
+    )
+    name: str | None = Field(default=None, min_length=1, max_length=2000)
+    run_doctor: StrictBool = False
+    in_place: StrictBool = True
 
 
 class DatasetDeletionRequest(BaseModel):
@@ -254,6 +303,19 @@ def create_app(settings, background=True):
     app.state.datasets = datasets
     app.state.trims = trims
     install_security(app, settings, device_prefix="/device/")
+    app.add_middleware(
+        ListCompressionMiddleware,
+        paths={
+            "/api/collections",
+            "/api/uploads",
+            "/api/jobs",
+            "/api/datasets",
+            "/api/merge-candidates",
+            "/api/version-conversion-candidates",
+            "/api/trim-candidates",
+            "/api/annotations",
+        },
+    )
     mount_ui(app, report=True)
 
     @app.get("/healthz")
@@ -453,18 +515,30 @@ def create_app(settings, background=True):
         return rows
 
     @app.get("/api/collections")
-    def collections():
-        return group_uploads(uploads())
+    def collections(summary: bool = False):
+        groups = group_uploads(uploads())
+        if summary:
+            for group in groups:
+                group["uploads"] = [
+                    {k: v for k, v in row.items() if k in COLLECTION_UPLOAD_FIELDS}
+                    for row in group["uploads"]
+                ]
+        return groups
 
     @app.post("/api/collections/{cid}/process", status_code=202)
     def process_collection(cid: str, body: BatchConversionRequest):
         return job_response(runner.enqueue_collection(cid, **body.model_dump()))
 
-    def job_response(row):
+    def job_response(row, summary=False):
         result = {**row, "target_format": row.get("target_format", "v3.0")}
         result["robot_type"] = row.get("robot_type") or row.get("profile", {}).get(
             "robot_type"
         )
+        if summary:
+            # List views only render progress and names; the full reports are
+            # fetched per job. Serving them here cost more than 10 MB per poll.
+            for field in JOB_SUMMARY_OMIT:
+                result.pop(field, None)
         if row["state"] == "BLOCKED":
             blockers = row.get("blockers")
             if blockers is None:
@@ -485,8 +559,12 @@ def create_app(settings, background=True):
         return result
 
     @app.get("/api/jobs")
-    def jobs():
-        return [job_response(row) for row in ingest.store.all("job") if row["state"] not in DELETION_STATES]
+    def jobs(summary: bool = False):
+        return [
+            job_response(row, summary)
+            for row in ingest.store.all("job")
+            if row["state"] not in DELETION_STATES
+        ]
 
     @app.get("/api/merge-candidates")
     def merge_candidates():
@@ -541,6 +619,19 @@ def create_app(settings, background=True):
                 body.preview_id,
                 name=body.name,
                 run_doctor=body.run_doctor,
+            )
+        )
+
+    @app.post("/api/jobs/{jid}/manual-trims", status_code=202)
+    def manual_trim_start(jid: str, body: ManualTrimRequest):
+        return job_response(
+            trims.enqueue_manual(
+                jid,
+                body.episode_index,
+                body.remove_ranges,
+                name=body.name,
+                run_doctor=body.run_doctor,
+                in_place=body.in_place,
             )
         )
 

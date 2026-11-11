@@ -1,5 +1,9 @@
 # BodyPipeline
 
+> **Server 分支部署快照（2026-11-11）**：主服务运行源码已同步，生产凭据、
+> 内网入口及运行数据不包含在内。同步范围、配置示例及部署差异见
+> [Server 部署源码快照](docs/server-deployed-snapshot.md)。
+
 **面向机器人遥操作采集、传输与 LeRobot 数据处理的 Client / Server 数据管线。**
 
 BodyPipeline 在机器人端提供 Web 数采工作台，在服务器端统一完成原始数据接收、时间对齐、LeRobot v2.1 / v3.0 转换、质量检查和 Visualizer 预览。系统基于 [letools](https://github.com/XieWeikai/letools) 构建，采用 FastAPI + 原生 Web 页面、文件目录 + JSON 状态持久化，不需要数据库，也不要求前端构建。

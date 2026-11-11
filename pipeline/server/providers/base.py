@@ -57,10 +57,9 @@ def configured_interval_policy(profile: dict) -> dict:
     """Read the optional trusted ``static_intervals`` block a Profile declares.
 
     Whole-recording static detection reuses the signal definition of the
-    ``trim`` block (feature, candidate features, units and thresholds) but keeps
-    its own timing defaults. A Profile that declares only ``trim`` therefore
-    still gets consistent motion semantics, while the longer static threshold is
-    never inherited from a boundary rule.
+    ``trim`` block (feature, candidate features, units and thresholds). A
+    Profile that declares only ``trim`` therefore still gets consistent motion
+    semantics.
     """
 
     signal_keys = (
@@ -79,14 +78,7 @@ def configured_interval_policy(profile: dict) -> dict:
     config = profile.get("static_intervals")
     if isinstance(config, dict):
         values.update(config)
-    allowed = (
-        *signal_keys,
-        "min_static_seconds",
-        "min_motion_seconds",
-        "jitter_amplitude_seconds",
-        "padding_seconds",
-        "min_output_seconds",
-    )
+    allowed = (*signal_keys,)
     return {key: values[key] for key in allowed if key in values}
 
 

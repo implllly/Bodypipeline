@@ -1,0 +1,135 @@
+{
+  "id": "ARX_X5_direct_teaching_v1",
+  "version": 1,
+  "robot_type": "ARX_X5",
+  "control_mode": "teleoperation",
+  "semantics_approved": true,
+  "clock_verified": true,
+  "joint_names": [
+    "left_joint_1",
+    "left_joint_2",
+    "left_joint_3",
+    "left_joint_4",
+    "left_joint_5",
+    "left_joint_6",
+    "left_gripper",
+    "right_joint_1",
+    "right_joint_2",
+    "right_joint_3",
+    "right_joint_4",
+    "right_joint_5",
+    "right_joint_6",
+    "right_gripper"
+  ],
+  "joint_units": [
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad",
+    "rad"
+  ],
+  "output_fps": 30,
+  "minimum_frames": 30,
+  "max_frame_skew_ms": 20,
+  "max_sensor_skew_ms": 20,
+  "max_capture_gap_ms": 250,
+  "static_intervals": {
+    "default_threshold": 0.02,
+    "unit_thresholds": {
+      "rad": 0.02
+    },
+    "min_motion_seconds": 0.0,
+    "max_static_gap_frames": 0,
+    "max_join_step_seconds": 0.1
+  },
+  "cameras": [
+    {
+      "id": "head",
+      "label": "头部相机",
+      "topic": "/camera/camera_h/color/image_rect_raw/compressed"
+    },
+    {
+      "id": "left_wrist",
+      "label": "左腕相机",
+      "topic": "/camera/camera_l/color/image_rect_raw/compressed"
+    },
+    {
+      "id": "right_wrist",
+      "label": "右腕相机",
+      "topic": "/camera/camera_r/color/image_rect_raw/compressed"
+    }
+  ],
+  "arm_topics": {
+    "left": "/arm_slave_l_status",
+    "right": "/arm_slave_r_status"
+  },
+  "joy_topic": "/arx_joy",
+  "action_semantics": {
+    "representation": "measured_joint_position_as_demonstration_target",
+    "source": "Same-frame copy of measured qpos, matching ROS2_AC-one_Play/act/collect.py:145-147; no independent command or future-target inference",
+    "order": [
+      "left J1..J6, gripper",
+      "right J1..J6, gripper"
+    ]
+  },
+  "clock_policy": {
+    "recording": "monotonic host time when the complete observation snapshot is read",
+    "source": "ROS message header.stamp seconds for each camera and arm; no synthetic timestamps",
+    "alignment": "bounded nearest complete snapshot on monotonic time, with independent cross-sensor header-skew check",
+    "verification": "Hardware clock domain and real acquisition cadence remain to be verified"
+  },
+  "verification": {
+    "source_review": "Operator-confirmed on 2026-10-28: action[t] is observations/qpos[t]; complete observations are aligned on the head-camera source clock",
+    "limitations": [
+      "Gripper values use nominal motor travel (-3.14 open, 0 closed), not physical aperture or force",
+      "Cross-sensor source skew above 20 ms is retained as a conversion warning and does not fabricate tighter synchronization",
+      "No new hardware clock or gripper calibration measurement was performed during this approval"
+    ]
+  },
+  "conversion": {
+    "gripper_closure": {
+      "algorithm": "closing_hold_plateaus_v4",
+      "calibration_id": "arx_x5_nominal_motor_travel_v1",
+      "default_increase_percent": 10,
+      "channels": [
+        {
+          "joint": "left_gripper",
+          "open": -3.14,
+          "closed": 0.0
+        },
+        {
+          "joint": "right_gripper",
+          "open": -3.14,
+          "closed": 0.0
+        }
+      ],
+      "phase_parameters": {
+        "median_frames": 5,
+        "opening_prominence": 0.06,
+        "minimum_closure": 0.06,
+        "closing_onset": 0.02,
+        "plateau_range": 0.04,
+        "plateau_seconds": 0.3,
+        "minimum_phase_seconds": 0.4,
+        "release_window_seconds": 0.2,
+        "release_drop": 0.045,
+        "release_confirm_seconds": 0.5,
+        "release_confirm_drop": 0.12,
+        "release_onset_drop": 0.01,
+        "empty_closed_margin": 0.2,
+        "stability_range": 0.025,
+        "minimum_plateau_seconds": 0.5,
+        "maximum_level_difference": 0.15
+      }
+    }
+  }
+}

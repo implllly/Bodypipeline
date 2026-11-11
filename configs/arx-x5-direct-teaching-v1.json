@@ -42,6 +42,12 @@
   "max_frame_skew_ms": 20,
   "max_sensor_skew_ms": 20,
   "max_capture_gap_ms": 250,
+  "static_intervals": {
+    "default_threshold": 0.1,
+    "unit_thresholds": {
+      "rad": 0.1
+    }
+  },
   "cameras": [
     {
       "id": "head",
@@ -88,9 +94,9 @@
   },
   "conversion": {
     "gripper_closure": {
-      "algorithm": "closing_hold_plateaus_v1",
+      "algorithm": "closing_hold_plateaus_v4",
       "calibration_id": "arx_x5_nominal_motor_travel_v1",
-      "default_percent": 90,
+      "default_increase_percent": 10,
       "channels": [
         {
           "joint": "left_gripper",

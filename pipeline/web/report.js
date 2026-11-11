@@ -123,10 +123,21 @@ function showLogin() {
   $("logout").hidden = true;
   $("token")?.focus();
 }
+let trustedNetwork = null;
+async function resolveTrust() {
+  if (trustedNetwork !== null) return;
+  try {
+    const config = await api("/api/config");
+    trustedNetwork = Boolean(config.trusted_network);
+  } catch {
+    trustedNetwork = false;
+  }
+}
 function hideLogin() {
   $("login-view").hidden = true;
   $("report-view").hidden = false;
-  $("logout").hidden = false;
+  // A trusted-network deployment has no browser session to end.
+  $("logout").hidden = Boolean(trustedNetwork);
 }
 
 async function api(path, method = "GET", body) {
@@ -243,7 +254,11 @@ function renderMeta(job, report) {
     ${metaItem("创建时间", esc(timeText(job.created_at)))}
     ${metaItem("完成时间", esc(timeText(job.finished_at)))}
     ${metaItem("Instruction", esc(job.instruction || "—"))}
-    ${job.conversion_options?.gripper_closure ? metaItem("夹持阶段最小闭合度", `${esc(job.conversion_options.gripper_closure.minimum_percent)}%（电机名义行程）`) : ""}
+    ${job.conversion_options?.gripper_closure ? (
+      job.conversion_options.gripper_closure.increase_percent == null
+        ? metaItem("夹持阶段最小闭合度（旧版）", `${esc(job.conversion_options.gripper_closure.minimum_percent)}%（电机名义行程）`)
+        : metaItem("夹持阶段闭合度增加", `+${esc(job.conversion_options.gripper_closure.increase_percent)} 个百分点（电机名义行程）`)
+    ) : ""}
     ${
       job.operation === "version_conversion"
         ? metaItem(
@@ -776,7 +791,8 @@ function applyFilter() {
 async function load() {
   clearTimeout(pollTimer);
   try {
-    const jobs = await api("/api/jobs");
+    const jobs = await api("/api/jobs?summary=true");
+    await resolveTrust();
     hideLogin();
     clearNotice();
     if (!jobId) {
@@ -791,7 +807,8 @@ async function load() {
       renderPicker(jobs);
       return;
     }
-    const job = jobs.find((row) => row.id === jobId) || (await api("/api/jobs/" + jobId));
+    // The summary list omits the reports; the selected job is fetched in full.
+    const job = await api("/api/jobs/" + jobId);
     const [checks, runs] = await Promise.all([
       api(`/api/jobs/${jobId}/checks`),
       api(`/api/jobs/${jobId}/analyses`).catch(() => []),

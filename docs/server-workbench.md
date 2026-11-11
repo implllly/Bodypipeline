@@ -9,8 +9,8 @@ Server 页面用于管理原始数据、提交批量转换、删除或合并数�
 
 所有结果都保存在 Server 文件系统，不使用数据库。页面中显示的路径都是运行 Server 的主机路径，不是操作者本机路径。
 
-原始采集转换表单会按 Runtime 能力显示可选项。目前 ARX 支持“夹持阶段最小闭合度”修正，
-默认关闭，启用后填写电机名义行程百分比；规则和部署兼容说明见
+原始采集转换表单会按 Runtime 能力显示可选项。目前 ARX 支持“夹持阶段闭合度增加”修正，
+默认关闭，启用后填写电机名义行程的百分点增量；规则和部署兼容说明见
 [夹爪闭合度修正](robots/gripper-closure.md)。
 
 ## 1. 原始数据
@@ -33,6 +33,8 @@ Server 页面用于管理原始数据、提交批量转换、删除或合并数�
 ```
 
 切换机器人类型会清空上一类型的数据选择，避免把不同 Profile 或原始格式误提交到同一任务。后台轮询刷新会保留当前选择。
+
+管理台每轮只刷新当前标签页需要的列表：合并候选、版本转换候选、首尾裁剪候选和标注不会在无关页面重复请求；切换标签页时立即拉取该页所需数据，隐藏页面（浏览器标签页切到后台）暂停轮询。
 
 无法从 Manifest 或 Profile 恢复机器人类型的历史记录会归入“未标注类型”，不会冒用当前服务器默认型号。
 
@@ -107,7 +109,7 @@ Server 页面用于管理原始数据、提交批量转换、删除或合并数�
    - LeRobot `v2.1`。
 4. 选择不合格采集处理策略：默认“全部通过才转换”；也可选择“跳过不合格采集，转换合格部分”。
 5. 选择是否在转换完成后自动运行 Doctor。
-6. 按需勾选“转换时自动删除首尾静止帧”或“转换时自动删除全程静止区间”（所有机器人通用，二者互斥，演示模式不可用）。
+6. 按需勾选“转换时自动删除首尾静止帧”或“转换时自动删除全程静止帧”（所有机器人通用，二者互斥，演示模式不可用）。
 7. 提交任务。
 
 要求：
@@ -122,7 +124,7 @@ Server 页面用于管理原始数据、提交批量转换、删除或合并数�
 不合格采集策略由通用 Server 批处理流程执行，所有 RobotProvider 共用。API 参数
 `invalid_episode_policy` 接受 `fail`（默认）或 `skip`，单条和批量转换都支持；策略不同会产生不同任务。
 首尾裁剪通过独立的布尔参数 `trim_idle_frames`（默认 `false`）开关，不进入机器人特有的
-`conversion_options`；只有勾选时任务去重键才包含该选项。全程静止区间裁剪使用
+`conversion_options`；只有勾选时任务去重键才包含该选项。静止帧裁剪使用
 `trim_static_intervals`（默认 `false`），二者互斥，同样只在勾选时进入去重键。
 只有 Provider 明确抛出的 `EpisodeValidationError` 可以跳过，包括已识别的数据字段缺失、
 时序缺口、数值或图像内容不合格。文件摘要变化、配置不匹配、工具缺失、超时、I/O 或程序异常
@@ -253,7 +255,7 @@ work/<job_id>/
 
 “数据转化”页在所有机器人类型下都提供“删除首尾静止帧”，用于删除每个 Episode 开头和结尾机器人尚未运动或已经停止的画面。中间的停顿不会被删除，避免把演示中的关键等待动作裁掉。来源数据集保持不变，输出是新的独立 LeRobot 数据集。
 
-原始数据转换表单还提供“转换时自动删除首尾静止帧”复选项。勾选后无需单独预览：转换任务在 `letools convert` 完成、Provider 写入元数据之后，直接在同一个工作目录内先检测再裁剪，然后才对最终数据集执行 deep validate 和 Doctor。裁剪结果先写入 `work/trimmed`，只有 Episode / 帧数与检测计划一致时才替换 `work/dataset`，因此失败不会发布写了一半的数据集。转换内的裁剪始终保留整段静止的 Episode，不会静默删除整个 Episode；演示模式不生成 LeRobot 数据，该选项不可用。裁剪策略、摘要和逐 Episode 范围记录在任务字段 `trim_policy` / `trim_summary` / `trim_report`，以及 `dataset/meta/bodypipeline-stationary-trim.json` 和工作目录的 `trim-lineage.json`。
+原始数据转换表单还提供“转换时自动删除首尾静止帧”复选项。勾选后无需单独预览：转换任务在 `letools convert` 完成、Provider 写入元数据之后，直接在同一个工作目录内先检测再裁剪，然后才对最终数据集执行 deep validate 和 Doctor。裁剪结果先写入 `work/trimmed`，只有 Episode / 帧数与检测计划一致时才替换 `work/dataset`，因此失败不会发布写了一半的数据集。若检测确认所有 Episode 都没有可删除帧，则跳过重写和视频重编码，只记录溯源文件并继续 deep validate。独立裁剪与转换内裁剪的视频按相机和来源视频分片并行编码，并行度受当前 CPU 预算约束。转换内的裁剪始终保留整段静止的 Episode，不会静默删除整个 Episode；演示模式不生成 LeRobot 数据，该选项不可用。裁剪策略、摘要和逐 Episode 范围记录在任务字段 `trim_policy` / `trim_summary` / `trim_report`，以及 `dataset/meta/bodypipeline-stationary-trim.json` 和工作目录的 `trim-lineage.json`。
 
 流程固定为“先预览、后执行”：
 
@@ -274,21 +276,36 @@ work/<job_id>/
 
 接口：`GET /api/trim-candidates` 获取候选数据集，`GET /api/jobs/{id}/trim-policy` 获取 Provider 解析后的检测特征、FPS 与阈值；`POST /api/jobs/{id}/trim-previews` 提交预览，`GET /api/trim-previews/{id}` 读取结果，`POST /api/jobs/{id}/trims` 接收 `preview_id`、`name` 和 `run_doctor` 并返回 202。相同来源、预览计划、名称和 Doctor 选项的排队或运行中请求会复用同一任务。
 
-### 2.7 删除全程静止区间（所有机器人通用）
+### 2.7 删除静止帧（所有机器人通用）
 
-原始数据转换表单另提供“转换时自动删除全程静止区间”复选项，用于删除录制中任何位置的持续静止画面，包括开头、中间和结尾。它解决的是“动作 A → 长时间静止 → 动作 B”这类数据：这些静止段不属于首尾边界，首尾裁剪按设计不会删除。识别结果是“持续静止区间”，不代表一定能确认它由推理等待造成；任务摘要和溯源也使用同样的措辞。
+原始数据转换表单另提供“转换时自动删除静止帧”复选项，用于删除录制中任何位置的静止帧，包括开头、中间和结尾。它解决的是“动作 A → 静止 → 动作 B”这类数据：这些静止帧不属于首尾边界，首尾裁剪按设计不会删除。识别结果是“静止帧”，不代表一定能确认它由推理等待造成；任务摘要和溯源也使用同样的措辞。
 
 该选项与“删除首尾静止帧”互斥：前端勾选一个会取消另一个，后端同时收到两个 `true` 时返回 400。演示模式不生成 LeRobot 数据集，因此不可用。转换任务在 Provider 写入元数据后执行 `detect-static`，确认计划后把保留区间写入 `work/trimmed`，校验输出 Episode / 帧数与计划一致再原子替换 `work/dataset`。
 
 检测规则：
 
-- 使用 Provider / Profile 指定的运动特征和单位阈值；Profile 未声明 `static_intervals` 时复用 `trim` 块的运动信号，但使用全程检测自己的时长默认值（默认最长静止门槛 2 秒，不复用首尾的 0.5 秒）。
+- 使用 Provider / Profile 指定的运动特征和单位阈值；Profile 未声明 `static_intervals` 时复用 `trim` 块的运动信号。任何被判为静止的帧立即删除，不要求持续达到最短时长。Profile 可以按机器人覆盖阈值，例如 ARX direct-teaching Profile 声明 `unit_thresholds.rad=0.1`（rad/s），用于识别带轻微漂移的保持帧；注意 `rad` 单位有内置阈值 `0.02`，只改 `default_threshold` 不生效。
 - 任一维度超过阈值即视为运动；短于最小时长且累计位移落在抖动范围内的运动突发会被忽略，避免零星抖动把长静止段切断，但短而明显的真实动作仍会切开静止段。
-- 每个删除区间在靠近运动的一侧保留边界余量；录制首尾边界不需要余量。
-- 删除后若保留片段短于最短输出时长，则取消相邻的一段删除，而不是静默丢弃或保留极短片段。
+- 删除时不在动作边界保留任何余量。
+- 删除后若保留片段短于最短输出时长，则把该片段并入相邻删除区间：录制首尾的短运动片段并入边界删除，两个静止区间之间的短动作并入并合并两段删除，从而保证开头、中间和结尾的静止画面都会被删除；若合并后只剩一个片段，则保留该片段，避免整段消失。
 - 整段静止的 Episode 保留并标记，绝不因该选项消失。
 
-删除中间静止段后，一个来源 Episode 可能输出多个 Episode。每个输出 Episode 只包含单个连续来源区间：数值帧、全部相机视频、`frame_index`、全局 `index`、时间戳、tasks、split 和统计都会重建。动作列按区间直接切片，删除区间两侧的帧不会成为相邻的“下一帧动作”；每个输出 Episode 的最后一帧保留来源动作标签，作为该 Episode 的终止动作。来源数据集保持不变。任务字段为 `trim_static_intervals`、`interval_summary`、`interval_policy` 和 `interval_report`，溯源写入 `dataset/meta/bodypipeline-static-intervals.json` 与工作目录的 `trim-intervals-lineage.json`。
+删除静止帧后，每个来源 Episode 仍输出一个 Episode：保留片段按原顺序前后直接相连，静止帧两侧的帧成为相邻帧。数值帧、全部相机视频、`frame_index`、全局 `index`、时间戳、tasks、split 和统计都会重建；动作列按区间切片后拼接，因此切点处会产生一次来源动作到来源状态的直接衔接，这是“删除并相连”语义的预期结果。来源数据集保持不变。任务字段为 `trim_static_intervals`、`interval_summary`、`interval_policy` 和 `interval_report`，溯源写入 `dataset/meta/bodypipeline-static-intervals.json` 与工作目录的 `trim-intervals-lineage.json`。
+
+### 2.8 在 Visualizer 中手动删除时间段（所有机器人通用）
+
+打开一个 `bp/` 预览后，Episode 页的时间轴下方会出现“手动裁剪时间段”面板。用户直接在当前 Episode 的时间轴上拖选要删除的片段，面板会把秒数吸附到真实帧号，并列出每段删除区间；可逐段调整起点 / 终点、删除单段或清空后重新选择。删除后只保留一个 Episode：未删除的片段按原顺序前后直接相连，与 2.7 的拼接语义一致。
+
+该功能只作用于当前 Episode，数据集中的其他 Episode 原样保留。服务端不接受浏览器传来的秒数或数据集路径，只接收 `episode_index` 和半开帧区间 `[start, stop)`；来源固定为当前预览已注册的 `bp/<job_id>`，Worker 再按真实 Episode 长度校验区间，越界、空区间、重叠或会删空整个 Episode 的请求都会被拒绝。
+
+提交流程：
+
+1. 浏览器向同源网关 `POST /api/manual-trims/{dataset_id}` 提交帧区间，网关校验预览注册后转发到 Server 的 `POST /api/jobs/{id}/manual-trims`。
+2. Server 创建独立的 `manual_trim` 任务，来源快照、Episode、删除区间、帧数和 `run_doctor` 进入去重键；相同请求复用排队或运行中的任务。
+3. Worker 以 `trim-manual` 模式计算删除区间的补集，复用现有裁剪写入器重建数值帧、全部相机视频、`frame_index`、全局 `index`、时间戳、tasks、split 和统计，然后执行深度结构验证。
+4. 只有输出 Episode 数与来源一致、总帧数等于来源帧数减去删除帧数时才会发布；失败不会留下半写入的数据集。输出是新的独立数据集，来源数据集保持不变。
+
+任务完成后可在面板中直接打开裁剪结果预览，也可以在管理台继续运行 Doctor 或质检。任务字段为 `manual_episode`、`manual_removed_ranges`、`manual_removed_frames`、`manual_summary` 和 `trim_report`，溯源写入 `dataset/meta/bodypipeline-manual-trim.json` 与工作目录的 `lineage.json`。接口：`POST /api/jobs/{id}/manual-trims` 接收 `episode_index`、`remove_ranges`、`name` 和 `run_doctor`；网关另提供 `GET /api/manual-trims/{dataset_id}/jobs/{job_id}` 轮询状态和 `POST /api/manual-trims/{dataset_id}/jobs/{job_id}/preview` 打开结果。
 
 ## 3. 预览与质检
 

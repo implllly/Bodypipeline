@@ -1,0 +1,69 @@
+{
+  "root": ".runtime/server",
+  "data_root": ".runtime/server-data",
+  "import_roots": [".runtime/imports"],
+  "processing_mode": "real",
+  "auto_process": false,
+  "trusted_network": false,
+  "min_free_bytes": 10737418240,
+  "server_url": "http://127.0.0.1:8081",
+  "viewer_origin": "http://127.0.0.1:8082",
+  "viewer_ui_port": 13100,
+  "viewer_data_port": 18765,
+  "letools_bin": "letools",
+  "tianji_provider_bin": "tianji-provider",
+  "viewer_bun": "",
+  "profiles": {
+    "agilex_aloha_agx": {
+      "profile_path": "configs/agilex-aloha-agx-v2.json",
+      "provider": "agilex",
+      "raw_formats": ["agilex_timestamped_directory_v1", "agilex_joint_camera_hdf5_v1"],
+      "accepted_capture_profile_hashes": []
+    },
+    "arx_direct_teaching": {
+      "profile_path": "configs/arx-x5-direct-teaching-v1-effective-static-v7.json",
+      "provider": "arx_direct_teaching",
+      "raw_formats": ["arx_direct_teaching_hdf5_v1"],
+      "accepted_capture_profile_hashes": []
+    },
+    "arx_hdf5": {
+      "profile_path": "configs/arx-x5-hdf5-mem-v1.json",
+      "provider": "aloha_hdf5",
+      "raw_formats": ["aloha_hdf5_episodes_v1"],
+      "accepted_capture_profile_hashes": []
+    },
+    "arx_kinesthetic": {
+      "profile_path": "configs/arx-x5-kinesthetic-v1.json",
+      "provider": "arx_kinesthetic",
+      "raw_formats": ["arx_kinesthetic_hdf5_v1"],
+      "accepted_capture_profile_hashes": []
+    },
+    "g1_sonic11_brainco": {
+      "profile_path": "configs/g1-sonic11-brainco-approved-20261102.json",
+      "provider": "g1_sonic",
+      "raw_formats": ["g1_sonic_raw_v1"],
+      "accepted_capture_profile_hashes": []
+    },
+    "tianji_thor": {
+      "profile_path": "configs/tianji-thor-v1.json",
+      "provider": "tianji",
+      "raw_formats": ["tianji_mcap_v1", "tianji_ros2_mcap_v1", "tianji_apex_mcap_v1"],
+      "accepted_capture_profile_hashes": []
+    }
+  },
+  "default_profile": "agilex_aloha_agx",
+  "devices": [],
+  "slurm": {
+    "enabled": false,
+    "cpus_per_task": 32,
+    "conversion_workers": 8,
+    "mem": "128G",
+    "time": "04:00:00"
+  },
+  "argus_base_url": "",
+  "argus_api_key_env": "PIPELINE_ARGUS_API_KEY",
+  "argus_auto_label": false,
+  "argus_annotation_unlimited": false,
+  "argus_max_tokens": 12000,
+  "argus_per_episode_budget_usd": 1.0
+}

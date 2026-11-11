@@ -1,7 +1,7 @@
 """Queued automatic annotation over registered LeRobot datasets.
 
 Argus ``review`` is a long, model-driven job: it prepares episodes, runs the
-deterministic checks, calls the configured model under a spend cap and builds
+deterministic checks, calls the configured model with an optional spend cap and builds
 per-episode labels.  This module owns the queue around it: source verification,
 a separate worker loop, cancellation, resume, spend accounting and the durable
 record the page reads.  It never changes the converted dataset and never touches
@@ -138,12 +138,17 @@ class AnnotationRunner:
             "rigs": list(ANNOTATION_RIGS),
             "api_key_configured": argus_annotation.server_key_configured(self.settings),
             "gateway_configured": bool(self.settings.argus_base_url),
+            "unlimited": self.settings.argus_annotation_unlimited,
             "defaults": {
-                "cap_usd": float(self.settings.argus_task_budget_usd),
-                "daily_cap_usd": float(self.settings.argus_daily_budget_usd),
-                "per_episode_budget_usd": float(
-                    self.settings.argus_per_episode_budget_usd
-                ),
+                "cap_usd": None
+                if self.settings.argus_annotation_unlimited
+                else float(self.settings.argus_task_budget_usd),
+                "daily_cap_usd": None
+                if self.settings.argus_annotation_unlimited
+                else float(self.settings.argus_daily_budget_usd),
+                "per_episode_budget_usd": None
+                if self.settings.argus_annotation_unlimited
+                else float(self.settings.argus_per_episode_budget_usd),
                 "concurrency": int(self.settings.argus_annotation_concurrency),
                 "reasoning": self.settings.argus_annotation_reasoning,
                 "sample_fps": float(self.settings.argus_annotation_sample_fps),
@@ -182,6 +187,15 @@ class AnnotationRunner:
         return total
 
     def budget(self, jid: str, episodes: int) -> dict:
+        if self.settings.argus_annotation_unlimited:
+            return {
+                "unlimited": True,
+                "task_cap_usd": None,
+                "task_used_usd": round(self._task_spend(jid), 4),
+                "daily_cap_usd": None,
+                "daily_used_usd": round(self._daily_spend(), 4),
+                "available_usd": None,
+            }
         task_cap = float(self.settings.argus_task_budget_usd)
         daily_cap = float(self.settings.argus_daily_budget_usd)
         per_episode = float(self.settings.argus_per_episode_budget_usd)
@@ -314,7 +328,7 @@ class AnnotationRunner:
             if not model:
                 raise DomainError("未配置标注模型", 400)
             gap = argus_annotation.pricing_gap(self.settings, model)
-            if gap:
+            if gap and not self.settings.argus_annotation_unlimited:
                 raise DomainError(gap, 400)
             note = (note or self.settings.argus_annotation_note or "").strip()
             if len(note) > 4000:
@@ -368,13 +382,15 @@ class AnnotationRunner:
                 )
             count = int(info.get("total_episodes") or 1)
             budget = self.budget(job_id, count)
-            available = float(budget["available_usd"])
-            if available <= 0:
-                raise BudgetExceeded("今日或本数据集的自动标注预算已用尽")
-            cap = available if cap_usd is None else float(cap_usd)
-            if cap <= 0:
-                raise DomainError("本次费用上限必须大于 0", 400)
-            cap = min(cap, available)
+            cap = None
+            if not self.settings.argus_annotation_unlimited:
+                available = float(budget["available_usd"])
+                if available <= 0:
+                    raise BudgetExceeded("今日或本数据集的自动标注预算已用尽")
+                cap = available if cap_usd is None else float(cap_usd)
+                if cap <= 0:
+                    raise DomainError("本次费用上限必须大于 0", 400)
+                cap = min(cap, available)
             signature = source_snapshot(data)
             context = self._provider_context(job)
             row = {
@@ -403,7 +419,7 @@ class AnnotationRunner:
                 "template_signature": digest(template) if template else None,
                 "template_library_revision": library_revision,
                 "note": note,
-                "cap_usd": round(cap, 4),
+                "cap_usd": round(cap, 4) if cap is not None else None,
                 "concurrency": concurrency,
                 "reasoning": reasoning,
                 "sample_fps": float(sample_fps),
@@ -523,7 +539,7 @@ class AnnotationRunner:
                     "Argus 模板支持缺失，请重新运行 scripts/install_argus.sh", 503
                 )
             gap = argus_annotation.pricing_gap(self.settings, row.get("model") or "")
-            if gap:
+            if gap and not self.settings.argus_annotation_unlimited:
                 raise DomainError(gap, 400)
             job = self.store.get("job", row["job_id"])
             data = dataset_for_job(self.settings, job)
@@ -556,16 +572,20 @@ class AnnotationRunner:
             budget = self.budget(
                 row["job_id"], int(row.get("input_episode_count") or 1)
             )
-            if budget["available_usd"] <= 0:
+            if budget["available_usd"] is not None and budget["available_usd"] <= 0:
                 raise BudgetExceeded("今日或本数据集的自动标注预算已用尽，不能续跑")
             fields["budget"] = budget
             previous = float(row.get("cost_usd") or 0.0)
-            fields["cap_usd"] = round(
-                min(
-                    float(row.get("cap_usd") or budget["available_usd"]),
-                    previous + float(budget["available_usd"]),
-                ),
-                4,
+            fields["cap_usd"] = (
+                None
+                if self.settings.argus_annotation_unlimited
+                else round(
+                    min(
+                        float(row.get("cap_usd") or budget["available_usd"]),
+                        previous + float(budget["available_usd"]),
+                    ),
+                    4,
+                )
             )
             if self._preparation_refused(row.get("error") or ""):
                 fields["fresh_start"] = True

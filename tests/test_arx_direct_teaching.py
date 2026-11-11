@@ -364,15 +364,16 @@ def test_alignment_preserves_source_and_does_not_approve(profile, tmp_path):
 
 def test_server_conversion_config_does_not_change_capture_contract(profile, tmp_path):
     changed = copy.deepcopy(profile)
-    changed["conversion"]["gripper_closure"]["default_percent"] = 95
+    changed["conversion"]["gripper_closure"]["default_increase_percent"] = 15
     changed["max_capture_gap_ms"] = 500
     assert capture_contract_hash(changed) == capture_contract_hash(profile)
     provider = ARXDirectTeachingProvider()
     assert provider.conversion_capabilities(profile)["gripper_closure"] == {
-        "minimum_percent": 0,
-        "maximum_percent": 100,
-        "default_percent": 90,
-        "algorithm": "closing_hold_plateaus_v1",
+        "correction": "additive_shift_v1",
+        "minimum_increase_percent": 0,
+        "maximum_increase_percent": 100,
+        "default_increase_percent": 10,
+        "algorithm": "closing_hold_plateaus_v4",
         "calibration_id": "arx_x5_nominal_motor_travel_v1",
         "percentage_definition": "nominal_motor_travel",
     }
@@ -382,7 +383,7 @@ def test_server_conversion_config_does_not_change_capture_contract(profile, tmp_
         path,
         tmp_path / "adjusted",
         profile,
-        options={"gripper_closure": {"minimum_percent": 90}},
+        options={"gripper_closure": {"increase_percent": 10}},
     )
     assert "gripper_closure" in report["action_corrections"]
 

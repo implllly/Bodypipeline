@@ -118,6 +118,26 @@ def completed_preview(app, preview_id, episodes=None):
 
 
 # --------------------------------------------------------------------------- unit
+def test_video_parallelism_respects_budget_and_task_count(monkeypatch):
+    from pipeline.server import trim_worker
+
+    monkeypatch.setattr(trim_worker, "_available_cpus", lambda: 8)
+    # More tasks than CPUs: one encoder thread per worker.
+    assert trim_worker.video_parallelism({}, 20) == (8, 1)
+    # Fewer tasks than CPUs: give each encoder the spare threads.
+    assert trim_worker.video_parallelism({}, 3) == (3, 2)
+    # An explicit override still respects the task count.
+    assert trim_worker.video_parallelism({"video_workers": 2}, 20) == (2, 4)
+    assert trim_worker.video_parallelism({"video_workers": 4}, 2) == (2, 4)
+    assert trim_worker.video_parallelism({}, 0) == (0, 1)
+    with pytest.raises(ValueError, match="正整数"):
+        trim_worker.video_parallelism({"video_workers": 0}, 5)
+    with pytest.raises(ValueError, match="正整数"):
+        trim_worker.video_parallelism({"video_workers": True}, 5)
+    monkeypatch.setattr(trim_worker, "_available_cpus", lambda: 96)
+    assert trim_worker.video_parallelism({}, 100) == (32, 3)
+
+
 def test_normalize_policy_applies_defaults_and_rejects_unknown_keys():
     value = normalize_policy({})
     assert value["feature"] == "observation.state"
@@ -897,6 +917,50 @@ def test_real_conversion_trims_boundary_idle_frames(
     assert all((raw / entry["path"]).is_file() for entry in manifest["files"])
 
 
+def test_real_conversion_skips_the_rewrite_when_nothing_is_trimmed(
+    settings_factory, letools_binary
+):
+    # A fully static recording has no boundary idle span to cut, so detection
+    # must report zero removed frames and the converted dataset must be kept
+    # as-is instead of being rewritten and re-encoded.
+    raw, manifest = capture_with_positions(
+        settings_factory, [[0.0] * 7 for _ in range(40)]
+    )
+    settings = settings_factory(
+        "server",
+        processing_mode="real",
+        letools_bin=letools_binary,
+        min_free_bytes=0,
+        command_timeout=600,
+    )
+    app = create_app(settings, background=False)
+    ingest = app.state.ingest
+    uid = upload_raw(ingest, raw, manifest)
+    job = app.state.runner.enqueue(
+        uid,
+        "v3.0",
+        run_doctor=False,
+        trim_idle_frames=True,
+    )
+    assert app.state.runner.tick() is True
+    result = ingest.store.get("job", job["id"])
+    assert result["state"] == "CONVERTED", result
+    summary = result["trim_summary"]
+    assert summary["frames_removed"] == 0
+    assert "裁剪首尾静止帧与全部相机视频" not in result.get("stage_timings", {})
+    assert result["trim_report"] is None
+    output = Path(result["dataset_path"])
+    lineage = json.loads(
+        (output / "meta/bodypipeline-stationary-trim.json").read_text()
+    )
+    assert lineage["entry"] == "conversion"
+    assert lineage["summary"]["frames_removed"] == 0
+    assert not (output.parent / "trimmed").exists()
+    info = json.loads((output / "meta/info.json").read_text())
+    assert info["total_frames"] == summary["frames"]
+    assert info["total_episodes"] == summary["episodes"]
+
+
 def test_real_conversion_removes_mid_recording_static_intervals(
     settings_factory, letools_binary
 ):
@@ -924,25 +988,31 @@ def test_real_conversion_removes_mid_recording_static_intervals(
     assert result["state"] == "CONVERTED", result
     summary = result["interval_summary"]
     assert summary["frames_removed"] > 0
-    assert summary["output_episodes"] == 2
-    assert result["episode_count"] == 2
+    # One source episode in, one output episode out: the static ranges are
+    # removed and the kept ranges are joined back together.
+    assert summary["source_episodes"] == 1
+    assert summary["output_episodes"] == 1
+    assert summary["episodes_joined"] == 1
+    assert result["episode_count"] == 1
     assert result["frame_count"] == summary["frames_kept"]
     assert result["interval_report"]["validated"] is True
     assert result["interval_report"]["frames_removed"] == summary["frames_removed"]
+    assert result["interval_algorithm"] == "static-intervals-v2"
     assert result["interval_policy"]["feature"] == "observation.state"
-    assert result["interval_policy"]["min_static_seconds"] == 2.0
+    assert "min_static_seconds" not in result["interval_policy"]
+    assert "padding_seconds" not in result["interval_policy"]
     output = Path(result["dataset_path"])
     info = json.loads((output / "meta/info.json").read_text())
     assert info["codebase_version"] == "v3.0"
-    assert info["total_episodes"] == 2
+    assert info["total_episodes"] == 1
     assert info["total_frames"] == summary["frames_kept"]
     lineage = json.loads(
         (output / "meta/bodypipeline-static-intervals.json").read_text()
     )
     assert lineage["entry"] == "conversion"
-    assert lineage["algorithm"] == "static-intervals-v1"
+    assert lineage["algorithm"] == "static-intervals-v2"
     assert lineage["summary"]["frames_removed"] == summary["frames_removed"]
-    assert len(lineage["episodes"]) == 2
+    assert len(lineage["episodes"]) == 1
     # The raw capture is only read, never mutated by the in-conversion trim.
     assert all((raw / entry["path"]).is_file() for entry in manifest["files"])
 

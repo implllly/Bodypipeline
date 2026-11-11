@@ -2,8 +2,9 @@
 
 Builds a LeRobot v2.1 or v3.0 dataset whose first episode has static frames at
 the head, in the middle and (too briefly to remove) at the tail, plus a fully
-static second episode. Detection must split the first episode into two output
-episodes and keep the second one unchanged and marked.
+static second episode. Detection must remove the first episode's static spans
+and join its kept ranges into one output episode, and keep the fully static
+second episode unchanged and marked.
 
 Run as a subprocess so the API test environment does not need av / letools.
 """
@@ -55,7 +56,7 @@ MOTION = [
 ]
 STATES = [MOTION, [STATIC] * len(MOTION)]
 FRAMES = len(MOTION)
-EXPECTED_SPLIT_LENGTHS = [3, 6]
+EXPECTED_JOINED_LENGTH = 6
 EXPECTED_STATIC_LENGTH = len(MOTION)
 
 FEATURES = {
@@ -289,10 +290,8 @@ def scenario(base: Path, version: str = "v3.0") -> dict:
     policy = normalize_policy(
         {
             "feature": "observation.state",
-            "min_static_seconds": 1.0,
             "min_motion_seconds": 0.2,
             "jitter_amplitude_seconds": 0.0,
-            "padding_seconds": 0.0,
             "min_output_seconds": 0.0,
         }
     )
@@ -304,12 +303,12 @@ def scenario(base: Path, version: str = "v3.0") -> dict:
     plan = run(str(detect_spec))
     summary = plan["summary"]
     assert summary["source_episodes"] == 2, summary
-    assert summary["output_episodes"] == 3, summary
+    assert summary["output_episodes"] == 2, summary
     assert summary["frames"] == EPISODES * FRAMES
-    assert summary["frames_removed"] == 12, summary
-    assert summary["frames_kept"] == EPISODES * FRAMES - 12
-    assert plan["episodes"][0]["keep_ranges"] == [[6, 9], [15, 21]]
-    assert plan["episodes"][0]["status"] == "split"
+    assert summary["frames_removed"] == 15, summary
+    assert summary["frames_kept"] == EPISODES * FRAMES - 15
+    assert plan["episodes"][0]["keep_ranges"] == [[6, 9], [15, 18]]
+    assert plan["episodes"][0]["status"] == "trimmed"
     assert plan["episodes"][1]["status"] == "static"
     assert plan["episodes"][1]["keep_ranges"] == [[0, FRAMES]]
 
@@ -329,18 +328,17 @@ def scenario(base: Path, version: str = "v3.0") -> dict:
     result = run(str(trim_spec))
     output = base / "output"
     assert result["validated"] is True
-    assert result["episodes"] == 3
-    assert result["frames"] == EPISODES * FRAMES - 12
+    assert result["episodes"] == 2
+    assert result["frames"] == EPISODES * FRAMES - 15
     trimmed = inspect(output)
     assert trimmed["valid"] is True
-    assert trimmed["total_episodes"] == 3
+    assert trimmed["total_episodes"] == 2
     assert [row["length"] for row in trimmed["episodes"]] == [
-        *EXPECTED_SPLIT_LENGTHS,
+        EXPECTED_JOINED_LENGTH,
         EXPECTED_STATIC_LENGTH,
     ]
-    assert trimmed["episodes"][0]["state"] == MOTION[6:9]
-    assert trimmed["episodes"][1]["state"] == MOTION[15:21]
-    assert all(row == STATIC for row in trimmed["episodes"][2]["state"])
+    assert trimmed["episodes"][0]["state"] == MOTION[6:9] + MOTION[15:18]
+    assert all(row == STATIC for row in trimmed["episodes"][1]["state"])
     assert sum(trimmed["videos"].values()) == sum(
         row["length"] for row in trimmed["episodes"]
     )

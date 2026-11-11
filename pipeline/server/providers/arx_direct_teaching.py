@@ -6,14 +6,13 @@ import io
 import json
 import math
 import os
-from functools import partial
 from pathlib import Path
 
 import h5py
 import numpy as np
 from PIL import Image
 
-from pipeline.shared.core import DomainError, digest
+from pipeline.shared.core import DomainError, atomic_json, digest
 from pipeline.shared.hdf5 import AGILEX_ALIGNED_SCHEMA
 
 from ..conversion_options import normalize_options
@@ -21,13 +20,36 @@ from ..episode_validation import EpisodeValidationError
 from ..quality import validate_robot_policy
 from .aloha_hdf5 import AlohaHDF5Provider
 from .gripper_closure import capabilities, correct_actions
-from .hdf5_images import copy_images, inspect_images
+from .hdf5_images import write_images
+from .hdf5_preset import write_hdf5_preset
 from .raw_contract import RawFileContract
 
 RAW_FORMAT = "arx_direct_teaching_hdf5_v1"
 RAW_SCHEMA = "bodypipeline.arx.direct_teaching.raw.v1"
 CAMERAS = ("head", "left_wrist", "right_wrist")
 SOURCES = (*CAMERAS, "left_arm", "right_arm")
+# RLinf RECAP reads this per-frame column from rollout datasets and uses the
+# last frame of each episode to assign the terminal failure reward.
+IS_SUCCESS = "is_success"
+_RESULT_TO_SUCCESS = {"success": True, "failed": False, "aborted": False}
+
+
+def _episode_is_success(metadata: dict) -> bool | None:
+    """Return the rollout success label, or None for non-rollout/unknown data.
+
+    SFT captures have no ``rollout`` block and must keep their existing schema.
+    Explicit ``unknown`` is also left unlabelled rather than guessed.
+    """
+
+    rollout = metadata.get("rollout") if isinstance(metadata, dict) else None
+    if not isinstance(rollout, dict):
+        return None
+    result = rollout.get("result_at_export")
+    if result in (None, "", "unknown"):
+        return None
+    if result not in _RESULT_TO_SUCCESS:
+        raise EpisodeValidationError(f"未知的 Rollout 结果标记：{result!r}")
+    return _RESULT_TO_SUCCESS[result]
 
 
 def capture_contract_hash(profile: dict) -> str:
@@ -62,14 +84,6 @@ def _self_contained(group, seen=None):
         if not isinstance(group.get(key, getlink=True), h5py.HardLink):
             raise EpisodeValidationError("ARX HDF5 不允许外部或软链接")
         _self_contained(group[key], seen)
-
-
-def _image_size(frame, name):
-    with Image.open(io.BytesIO(np.asarray(frame, dtype=np.uint8).tobytes())) as image:
-        image.load()
-        if image.format != "JPEG" or image.mode != "RGB":
-            raise EpisodeValidationError(f"ARX 相机不是 RGB JPEG：{name}")
-        return image.size
 
 
 def _read(
@@ -186,10 +200,18 @@ def _read(
                 if ds.ndim not in (1, 2) or len(ds) != n:
                     raise EpisodeValidationError(f"ARX 相机帧数不匹配：{name}")
                 size = None
-                for current_size in inspect_images(ds, partial(_image_size, name=name)):
-                    if size is not None and size != current_size:
-                        raise EpisodeValidationError(f"ARX 相机分辨率变化：{name}")
-                    size = current_size
+                for frame in ds:
+                    with Image.open(
+                        io.BytesIO(np.asarray(frame, dtype=np.uint8).tobytes())
+                    ) as image:
+                        image.load()
+                        if image.format != "JPEG" or image.mode != "RGB":
+                            raise EpisodeValidationError(
+                                f"ARX 相机不是 RGB JPEG：{name}"
+                            )
+                        if size is not None and size != image.size:
+                            raise EpisodeValidationError(f"ARX 相机分辨率变化：{name}")
+                        size = image.size
                 cameras[name] = size
             metadata = {}
             if "metadata" in h:
@@ -317,6 +339,7 @@ class ARXDirectTeachingProvider(AlohaHDF5Provider):
         normalize_options(options, self.conversion_capabilities(profile))
         package = raw if raw.is_file() else raw / "episode.hdf5"
         report = _read(package, profile, require_capture_contract=False)
+        is_success = _episode_is_success(report["metadata"])
         corrections = {}
         if "gripper_closure" in (options or {}):
             report["action"], corrections["gripper_closure"] = correct_actions(
@@ -367,6 +390,16 @@ class ARXDirectTeachingProvider(AlohaHDF5Provider):
                 output.create_dataset(
                     "action", data=report["action"][indices], compression="gzip"
                 )
+                if is_success is not None:
+                    # One scalar bool per frame. LeRobot declares scalar
+                    # features as shape [1] but stores them as plain columns;
+                    # a (N, 1) array would become list<bool> and RLinf's
+                    # ``bool(is_success_col[-1])`` would treat [False] as True.
+                    output.create_dataset(
+                        IS_SUCCESS,
+                        data=np.full(count, is_success, dtype=bool),
+                        compression="gzip",
+                    )
                 output.create_dataset("timestamp", data=grid)
                 output.create_dataset("source_frame_index", data=indices)
                 output.create_dataset(
@@ -380,13 +413,13 @@ class ARXDirectTeachingProvider(AlohaHDF5Provider):
                     compression="gzip",
                 )
                 for name, (width, height) in report["cameras"].items():
-                    ds = output.create_dataset(
+                    ds = write_images(
+                        output,
                         f"observation.images.{name}",
-                        shape=(count,),
-                        dtype=h5py.vlen_dtype(np.dtype("uint8")),
+                        source[f"observations/images/{name}"],
+                        indices,
                     )
                     ds.attrs.update(width=width, height=height, encoded_format="jpeg")
-                    copy_images(source[f"observations/images/{name}"], ds, indices)
             os.replace(temporary, aligned)
         except BaseException:
             temporary.unlink(missing_ok=True)
@@ -443,6 +476,94 @@ class ARXDirectTeachingProvider(AlohaHDF5Provider):
             **({"action_corrections": corrections} if corrections else {}),
         }
 
+    def conversion_args(
+        self,
+        *,
+        executable: str,
+        source: Path,
+        destination: Path,
+        profile: dict,
+        job: dict,
+    ) -> list[str]:
+        hdf5_files = sorted(source.glob("*.hdf5"))
+        if not hdf5_files:
+            raise DomainError("对齐结果中没有可转换的 HDF5 episode")
+        labelled = []
+        for path in hdf5_files:
+            with h5py.File(path, "r") as handle:
+                labelled.append(IS_SUCCESS in handle)
+        if any(labelled) and not all(labelled):
+            raise DomainError(
+                "ARX Rollout 数据集中部分 episode 缺少 success/failed 标记；"
+                "请只选择带结果标记的 episode"
+            )
+        extra_numeric_fields = None
+        if all(labelled):
+            extra_numeric_fields = [
+                {
+                    "source_key": IS_SUCCESS,
+                    "target_key": IS_SUCCESS,
+                    "dtype": "bool",
+                    "names": ["success"],
+                }
+            ]
+        preset = write_hdf5_preset(
+            source,
+            profile,
+            job,
+            hdf5_files[0],
+            # Keep the historical preset name for SFT so its conversion is
+            # byte-for-byte identical to before this change.
+            name=(
+                "bodypipeline_arx_direct_teaching"
+                if extra_numeric_fields is not None
+                else "bodypipeline_aloha_hdf5"
+            ),
+            extra_numeric_fields=extra_numeric_fields,
+        )
+        workers = max(1, int(job.get("convert_workers") or 1))
+        video_workers = max(1, int(job.get("video_workers") or workers))
+        return [
+            executable,
+            "convert",
+            str(source),
+            str(destination),
+            "--source-format",
+            "hdf5",
+            "--preset",
+            str(preset),
+            "--to",
+            job.get("target_format", "v3.0"),
+            "--workers",
+            str(workers),
+            "--video-workers",
+            str(video_workers),
+            "--video-codec",
+            "libx264",
+            "--video-pixel-format",
+            "yuv420p",
+            "--video-codec-threads",
+            str(max(1, int(job.get("video_codec_threads") or 1))),
+        ]
+
+    def patch_dataset_info(
+        self,
+        dataset: Path,
+        profile: dict,
+        *,
+        synthetic: bool = False,
+    ) -> None:
+        if synthetic:
+            return
+        super().patch_dataset_info(dataset, profile, synthetic=synthetic)
+        info_path = dataset / "meta/info.json"
+        info = json.loads(info_path.read_text())
+        feature = info.get("features", {}).get(IS_SUCCESS)
+        if feature is None:
+            return
+        feature.update(names=["success"], semantic_type="episode_success")
+        atomic_json(info_path, info)
+
     def quality(self, aligned: Path, profile: dict, synthetic: bool = False) -> dict:
         report = super().quality(aligned, profile, synthetic=synthetic)
         if synthetic or not aligned.is_file():
@@ -459,6 +580,12 @@ class ARXDirectTeachingProvider(AlohaHDF5Provider):
                 if "source_frame_skew_ms" in handle
                 else 0
             )
+            if IS_SUCCESS in handle:
+                values = np.asarray(handle[IS_SUCCESS])
+                if values.shape != (len(handle["action"]),):
+                    raise DomainError("ARX Rollout is_success 维度与帧数不一致")
+                if not np.isin(values, (0, 1)).all():
+                    raise DomainError("ARX Rollout is_success 只能为 0/1")
         warnings = list(report.get("warnings", []))
         if not len(skew):
             if (

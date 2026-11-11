@@ -164,11 +164,13 @@ class Store:
             ) from exc
 
     def put(self, kind: str, key: str, value: dict):
-        with self.lock:
-            path = self._file(kind, key)
-            if not isinstance(value, dict) or ("id" in value and value["id"] != key):
-                raise DomainError("状态必须是 JSON 对象且 ID 与文件名一致", 400)
-            atomic_json(path, value)
+        path = self._file(kind, key)
+        if not isinstance(value, dict) or ("id" in value and value["id"] != key):
+            raise DomainError("状态必须是 JSON 对象且 ID 与文件名一致", 400)
+        # Write to a unique temp file and replace atomically without holding the
+        # process-wide lock. A stalled shared filesystem must not block reads of
+        # unrelated state records.
+        atomic_json(path, value)
 
     def get(self, kind: str, key: str) -> dict:
         with self.lock:

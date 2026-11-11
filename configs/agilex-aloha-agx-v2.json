@@ -1,0 +1,67 @@
+{
+  "id": "agilex_aloha_agx_command_echo_v2",
+  "version": 2,
+  "control_mode": "teleoperation",
+  "robot_type": "agilex_aloha",
+  "semantics_approved": true,
+  "joint_names": ["left_joint_1", "left_joint_2", "left_joint_3", "left_joint_4", "left_joint_5", "left_joint_6", "left_gripper", "right_joint_1", "right_joint_2", "right_joint_3", "right_joint_4", "right_joint_5", "right_joint_6", "right_gripper"],
+  "joint_units": ["rad", "rad", "rad", "rad", "rad", "rad", "m", "rad", "rad", "rad", "rad", "rad", "rad", "m"],
+  "clock_verified": true,
+  "output_fps": 30,
+  "max_camera_skew_ms": 20,
+  "max_action_age_ms": 50,
+  "minimum_frames": 30,
+  "cameras": [
+    {"id": "left", "label": "左侧相机", "topic": "/camera_l/color/image_raw", "mounting": "wrist_left"},
+    {"id": "front", "label": "前方相机", "topic": "/camera_f/color/image_raw", "mounting": "scene"},
+    {"id": "right", "label": "右侧相机", "topic": "/camera_r/color/image_raw", "mounting": "wrist_right"}
+  ],
+  "state_streams": ["puppetLeft", "puppetRight"],
+  "action_streams": ["masterLeft", "masterRight"],
+  "joint_topics": ["/master/joint_left", "/master/joint_right", "/puppet/joint_left", "/puppet/joint_right"],
+  "pose_topics": ["/puppet/end_pose_left", "/puppet/end_pose_right"],
+  "service": "/data_tools_dataCapture/capture_service",
+  "status_topic": "/data_tools_dataCapture/status",
+  "crop_time_seconds": 0,
+  "notes": "Deployment-specific command-echo contract. Preserve raw values; physical-range and timestamp quality gates apply. Approval does not transfer to new hardware.",
+  "state_limits": [[-2.6179, 2.6179], [0, 3.14], [-2.967, 0], [-1.745, 1.745], [-1.22, 1.22], [-2.09439, 2.09439], [0, 0.07], [-2.6179, 2.6179], [0, 3.14], [-2.967, 0], [-1.745, 1.745], [-1.22, 1.22], [-2.09439, 2.09439], [0, 0.07]],
+  "action_limits": [[-2.6179, 2.6179], [0, 3.14], [-2.967, 0], [-1.745, 1.745], [-1.22, 1.22], [-2.09439, 2.09439], [0, 0.07], [-2.6179, 2.6179], [0, 3.14], [-2.967, 0], [-1.745, 1.745], [-1.22, 1.22], [-2.09439, 2.09439], [0, 0.07]],
+  "action_semantics": {
+    "representation": "absolute_joint_position_and_gripper_opening",
+    "source": "Piper CAN control-target echo, not independently measured master-arm posture",
+    "order": ["masterLeft.position[0:7]", "masterRight.position[0:7]"],
+    "joint_conversion": "Recorded driver uses millidegrees / 1000 * 0.017444 for command joints; preserve its published values without rescaling.",
+    "timestamp_semantics": "ROS publication time; does not prove freshness of the underlying CAN command"
+  },
+  "state_semantics": {
+    "representation": "measured_joint_position_and_gripper_opening",
+    "order": ["puppetLeft.position[0:7]", "puppetRight.position[0:7]"],
+    "joint_conversion": "millidegrees / 1000 * pi / 180",
+    "gripper_conversion": "micrometres / 1000000; full opening, not one finger displacement"
+  },
+  "clock_policy": {
+    "scope": "timestamp units, source and host epoch reviewed; not a hardware synchronization certification",
+    "filename_unit": "Unix seconds from ROS header.stamp",
+    "state": "SocketCAN receive timestamp propagated by Piper SDK; driver max(joint, high-speed-feedback) timestamp",
+    "action": "robot ROS system clock at publication; use_sim_time=false",
+    "cameras": "Orbbec device timestamps; enable_sync_host_time=true on all three cameras; driver syncs host clock at startup and every 30 seconds",
+    "resampling": "30 Hz; nearest RGB bounded by 20 ms; causal joint hold bounded by 50 ms; gaps remain errors"
+  },
+  "limits_policy": {
+    "source": "Installed piper_sdk C_PiperParamManager default nominal joint limits and gripper_range",
+    "scope": "dataset position QC only; not firmware limit calibration or a motion-control safety envelope",
+    "gripper_opening_m": [0, 0.07],
+    "tolerance": 0,
+    "note": "Do not expand nominal limits to fit observed out-of-range samples. Verify calibration/hardware variant before a future policy revision."
+  },
+  "verification": {
+    "date": "2026-10-17",
+    "method": "read-only review of conversion app, recorder, installed driver and SDK; live read-only ROS parameters and publisher identity; uploaded raw sample inspection",
+    "limitations": [
+      "Existing test capture has constant all-zero action and static feedback.",
+      "Published action timestamps do not expose CAN target freshness.",
+      "Nominal gripper range differs from observed 0.083 m; keep quality rejection."
+    ],
+    "publication_note": "Deployment audit paths, device aliases and capture fingerprints omitted from the source snapshot."
+  }
+}

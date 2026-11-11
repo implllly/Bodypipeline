@@ -156,6 +156,7 @@ def patch_presentation(cache: Path):
         "subtask-review-model.ts": "src/utils/subtask-review-model.ts",
         "annotation-review-client.ts": "src/utils/annotation-review-client.ts",
         "use-annotation-review.ts": "src/utils/use-annotation-review.ts",
+        "manual-trim.tsx": "src/components/manual-trim.tsx",
     }
     for name, target in destinations.items():
         (source / target).write_bytes((UI_ASSETS / name).read_bytes())
@@ -206,6 +207,10 @@ def patch_presentation(cache: Path):
     from pipeline.server.viewer_task_annotations import patch_task_annotations
 
     patch_task_annotations(cache)
+
+    from pipeline.server.viewer_manual_trim import patch_manual_trim
+
+    patch_manual_trim(cache)
 
     from pipeline.server.viewer_batch_preview import patch_batch_preview
 
@@ -269,6 +274,7 @@ def _fingerprint(cache: Path, data_origin: str) -> str:
                     + Path(__file__).read_bytes()
                     + Path(__file__).with_name("viewer_annotations.py").read_bytes()
                     + Path(__file__).with_name("viewer_task_annotations.py").read_bytes()
+                    + Path(__file__).with_name("viewer_manual_trim.py").read_bytes()
                     + Path(__file__).with_name("viewer_batch_preview.py").read_bytes()
                     + b"".join(
                         path.name.encode() + path.read_bytes()

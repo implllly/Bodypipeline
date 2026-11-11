@@ -408,7 +408,7 @@ Chat Completions 兼容网关，此时服务会自动设置
 
 ```json
 {
-  "argus_base_url": "https://aiproxy.mintibot.com:8888/v1",
+  "argus_base_url": "https://gateway.example.com/v1",
   "argus_models": ["gpt-6.1-sol"]
 }
 ```
@@ -580,8 +580,8 @@ Server 内存中，任务结束、取消或 Server 重启后清除；不会写�
 验收命令（在生产机执行，`$AID` 为标注 id）：
 
 ```bash
-curl -s -b cookie.txt "http://100.64.0.71:8081/api/annotations/$AID/subtask-export-preview" | jq '.summary'
-curl -s -b cookie.txt -X POST "http://100.64.0.71:8081/api/annotations/$AID/subtask-exports" \
+curl -s -b cookie.txt "http://127.0.0.1:8081/api/annotations/$AID/subtask-export-preview" | jq '.summary'
+curl -s -b cookie.txt -X POST "http://127.0.0.1:8081/api/annotations/$AID/subtask-exports" \
   -H 'content-type: application/json' -d '{"name": null}' | jq '{id,dataset_name,state}'
 # 任务完成后
 letools validate "/path/to/example-subtasks" --deep

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import time
 
 from fastapi import FastAPI, Request
@@ -80,6 +81,24 @@ form.addEventListener("submit", async (event) => {
 </script></body></html>"""
 VIEWER_LOGIN_PAGE = themed_html(VIEWER_LOGIN_PAGE)
 
+TRUSTED_NETWORK_VALUES = {"1", "true", "yes", "on"}
+
+
+def trusted_network_enabled(settings) -> bool:
+    """Return whether browser login is disabled for this deployment.
+
+    The setting lives on ``Settings`` but an environment override lets an
+    older release (for example the Viewer gateway) participate in trusted
+    mode without needing its configuration model extended.
+    """
+
+    if bool(getattr(settings, "trusted_network", False)):
+        return True
+    return (
+        os.environ.get("PIPELINE_TRUSTED_NETWORK", "").strip().lower()
+        in TRUSTED_NETWORK_VALUES
+    )
+
 
 def install_security(app: FastAPI, settings, device_prefix: str | None = None):
     cookie_name = f"pipeline_{settings.role}"
@@ -135,11 +154,15 @@ def install_security(app: FastAPI, settings, device_prefix: str | None = None):
     @app.middleware("http")
     async def auth(request: Request, call_next):
         p = request.url.path
+        # A trusted network (for example a Tailscale tailnet) already restricts
+        # who can reach this service, so the browser login is skipped.  Machine
+        # credentials for the device upload endpoints are still enforced.
+        trusted = trusted_network_enabled(settings)
         if settings.role == "viewer":
             # The Visualizer gateway has no per-dataset authorisation of its own,
             # so it shares the Server's admin token. Browsers get a login form;
             # everything else (video ranges, Doctor JSON, data bridge) gets 401.
-            if p in ("/api/login", "/api/logout", "/healthz"):
+            if trusted or p in ("/api/login", "/api/logout", "/healthz"):
                 response = await call_next(request)
             else:
                 authorised, cookie_only = credentials(request)
@@ -199,7 +222,8 @@ def install_security(app: FastAPI, settings, device_prefix: str | None = None):
             )
             or (settings.role == "client" and p == "/replay")
         )
-        if public and settings.role != "viewer":
+        device_path = bool(device_prefix and p.startswith(device_prefix))
+        if (trusted and not device_path) or (public and settings.role != "viewer"):
             response = await call_next(request)
         else:
             authorised, cookie_only = credentials(request)

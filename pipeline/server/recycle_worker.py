@@ -57,7 +57,7 @@ def recover_operation(store, row):
         row["entries"] = entries
         op.update(
             state="completed",
-            progress="清理完成，H800 中所选片段已删除",
+            progress="清理完成，服务器中所选片段已删除",
             finished_at=time.time(),
             remaining_episodes=marker["total_episodes"],
             deleted_frames=marker["deleted_frames"],
@@ -141,11 +141,13 @@ def _scalar_stats(values):
     }
 
 
-def _trim_video(source, output, segments, fps):
+def _trim_video(source, output, segments, fps, threads=None):
     """Remove unused time spans, preserving packets at independent GOP boundaries.
 
     Arbitrary external H.264 files may cross Episode boundaries. Decode/re-encode
-    those affected shards instead of leaving references to deleted frames.
+    those affected shards instead of leaving references to deleted frames. An
+    optional ``threads`` cap keeps concurrent cuts inside the caller's CPU
+    budget; ``None`` keeps the previous encoder defaults.
     """
     from fractions import Fraction
 
@@ -211,10 +213,14 @@ def _trim_video(source, output, segments, fps):
     else:
         with av.open(str(source)) as src, av.open(str(output), "w") as dst:
             stream = src.streams.video[0]
+            if threads:
+                stream.codec_context.thread_count = threads
             target = dst.add_stream("libx264", rate=fps)
             target.width, target.height = stream.width, stream.height
             target.pix_fmt = "yuv420p"
             target.options = {"crf": "18", "preset": "fast"}
+            if threads:
+                target.thread_count = threads
             index, written = 0, 0
             for frame in src.decode(stream):
                 timestamp = float(frame.pts * frame.time_base)

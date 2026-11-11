@@ -27,7 +27,7 @@ from ..episode_validation import EpisodeValidationError
 from ..quality import robot_profile_blockers, robot_quality, validate_robot_policy
 from .base import annotation_rig, configured_trim_policy
 from .gripper_closure import capabilities, correct_actions
-from .hdf5_images import copy_images
+from .hdf5_images import write_images
 from .hdf5_preset import write_hdf5_preset
 
 DEFAULT_STATE_KEY = "observations/qpos"
@@ -98,7 +98,9 @@ def _read_episode(path: Path, profile: dict) -> dict:
             state = np.asarray(handle[state_key], dtype=np.float32)
             action = np.asarray(handle[action_key], dtype=np.float32)
             if state.ndim != 2 or action.ndim != 2:
-                raise EpisodeValidationError(f"{path.name} 的 state/action 必须是二维数组")
+                raise EpisodeValidationError(
+                    f"{path.name} 的 state/action 必须是二维数组"
+                )
             if state.shape != action.shape:
                 raise EpisodeValidationError(f"{path.name} 的 state/action 形状不一致")
             if not np.isfinite(state).all() or not np.isfinite(action).all():
@@ -115,7 +117,9 @@ def _read_episode(path: Path, profile: dict) -> dict:
             shapes = {}
             for camera_id, source_key in cameras:
                 if source_key not in handle:
-                    raise EpisodeValidationError(f"{path.name} 缺少相机字段 {source_key}")
+                    raise EpisodeValidationError(
+                        f"{path.name} 缺少相机字段 {source_key}"
+                    )
                 dataset = handle[source_key]
                 if _frames(dataset) != frames:
                     raise EpisodeValidationError(
@@ -132,7 +136,9 @@ def _read_episode(path: Path, profile: dict) -> dict:
     except DomainError:
         raise
     except (KeyError, ValueError) as exc:
-        raise EpisodeValidationError(f"HDF5 原始 episode 无法读取：{path.name}") from exc
+        raise EpisodeValidationError(
+            f"HDF5 原始 episode 无法读取：{path.name}"
+        ) from exc
     return {
         "frames": frames,
         "dimensions": int(state.shape[1]),
@@ -220,16 +226,15 @@ class AlohaHDF5Provider:
                 )
                 for camera_id, source_key in _camera_fields(profile):
                     width, height = report["cameras"][camera_id]
-                    dataset = output.create_dataset(
-                        f"observation.images.{camera_id}",
-                        shape=(frames,),
-                        dtype=h5py.vlen_dtype(np.dtype("uint8")),
-                    )
+                    with h5py.File(package, "r") as source:
+                        dataset = write_images(
+                            output,
+                            f"observation.images.{camera_id}",
+                            source[source_key],
+                        )
                     dataset.attrs["width"] = width
                     dataset.attrs["height"] = height
                     dataset.attrs["encoded_format"] = "jpeg"
-                    with h5py.File(package, "r") as source:
-                        copy_images(source[source_key], dataset)
             os.replace(temporary, aligned)
         except BaseException:
             temporary.unlink(missing_ok=True)

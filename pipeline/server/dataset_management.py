@@ -24,6 +24,46 @@ def overlaps(a: Path, b: Path) -> bool:
     return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
+class _SafetyContext:
+    """One request's safety roots, with the lookups that used to dominate listing."""
+
+    __slots__ = ("allowed", "state_root", "protected", "symlinks")
+
+    def __init__(self, allowed, protected, state_root):
+        # Text comparisons replace pathlib's re-parsing of long paths; the
+        # listing checks thousands of them per request.
+        self.allowed = tuple(str(root) for root in allowed)
+        self.state_root = str(state_root)
+        # A path is rejected when it equals or contains a protected root.
+        # Indexing those ancestors once turns hundreds of thousands of
+        # is_relative_to() calls into set lookups.
+        ancestors = set()
+        for root in protected:
+            ancestors.add(str(root))
+            ancestors.update(str(parent) for parent in root.parents)
+        self.protected = frozenset(ancestors)
+        # Every path in one listing shares almost all of its parents, so a
+        # per-request memo keeps the directory stats to a handful on shared
+        # storage. Contexts do not outlive the request, so links cannot be
+        # cached across a mutation.
+        self.symlinks = {}
+
+    def is_symlink(self, path: Path) -> bool:
+        found = self.symlinks.get(path)
+        if found is None:
+            found = path.is_symlink()
+            self.symlinks[path] = found
+        return found
+
+    def allows(self, text: str) -> bool:
+        # Strictly inside a managed root; the root itself stays undeletable.
+        return any(text.startswith(root + os.sep) for root in self.allowed)
+
+    def in_state(self, text: str) -> bool:
+        root = self.state_root
+        return text == root or text.startswith(root + os.sep)
+
+
 class DatasetManager:
     def __init__(self, settings, runner, viewer):
         self.settings, self.runner, self.viewer = settings, runner, viewer
@@ -79,22 +119,21 @@ class DatasetManager:
         allowed.extend(root.resolve() for root in self.settings.import_roots)
         if self.settings.data_root is not None:
             allowed.append(self.settings.data_root.resolve())
-        return allowed, protected, self.store.path.resolve()
+        return _SafetyContext(allowed, protected, self.store.path.resolve())
 
     def _safe(self, path: Path, context=None) -> Path:
         # Check the original spelling before resolve: resolving first hides links.
         if not path.is_absolute() or ".." in path.parts:
             raise DomainError("删除路径必须为受管理的绝对路径", 403)
-        if any(p.is_symlink() for p in (path, *path.parents)):
+        context = self._safety_context() if context is None else context
+        if any(context.is_symlink(p) for p in (path, *path.parents)):
             raise DomainError("删除路径或其父目录包含符号链接，拒绝删除", 403)
         path = path.resolve()
-        allowed, protected, state_root = (
-            self._safety_context() if context is None else context
-        )
+        text = str(path)
         if (
-            not any(path.is_relative_to(root) and path != root for root in allowed)
-            or any(root == path or root.is_relative_to(path) for root in protected)
-            or path.is_relative_to(state_root)
+            not context.allows(text)
+            or text in context.protected
+            or context.in_state(text)
         ):
             raise DomainError("不能删除存储根目录、服务状态或不在允许范围内的数据", 403)
         return path
@@ -127,7 +166,9 @@ class DatasetManager:
                     "该路径存在未完成的删除任务，请等待完成或重试删除", 409
                 )
 
-    def _selection(self, kind, identifier, groups=None, job=None):
+    def _selection(
+        self, kind, identifier, groups=None, job=None, context=None, paths_cache=None
+    ):
         if kind == "raw":
             group = next(
                 (
@@ -142,7 +183,17 @@ class DatasetManager:
             rows = group["uploads"]
             if any(r["state"] != "COMMITTED" for r in rows):
                 raise DomainError("原始数据仍在上传、提交或删除中，请等待完成", 409)
-            paths = [p for r in rows for p in self._raw_paths(r)]
+            if paths_cache is None:
+                paths = [p for r in rows for p in self._raw_paths(r)]
+            else:
+                paths = []
+                for r in rows:
+                    # Absent entries mean the snapshot could not read that
+                    # upload; re-raise its error instead of hiding the dataset.
+                    cached = paths_cache.get(r["id"])
+                    paths.extend(
+                        cached if cached is not None else self._raw_paths(r)
+                    )
             return (
                 group["dataset_name"],
                 group["robot_type"],
@@ -153,7 +204,7 @@ class DatasetManager:
         path = dataset_for_job(self.settings, row)
         # Also validate the recorded spelling, since dataset_for_job resolves it.
         if row.get("dataset_path"):
-            self._safe(Path(row["dataset_path"]))
+            self._safe(Path(row["dataset_path"]), context)
         return (
             row.get("dataset_name") or row.get("instruction") or identifier,
             row.get("robot_type") or row.get("profile", {}).get("robot_type"),
@@ -179,13 +230,24 @@ class DatasetManager:
         snapshot["reference_owners"] = {}
         snapshot["descendant_owners"] = {}
         snapshot["reference_errors"] = {}
+        snapshot["raw_paths"] = {}
         for kind in ("upload", "job"):
             for row in snapshot[kind]:
                 if row["state"] == "DELETED":
                     continue
+                # In-place trim jobs reference the source dataset instead of
+                # owning a separate one; counting them would make the source
+                # look like a duplicate registration and block deletion.
+                if (
+                    kind == "job"
+                    and row.get("operation") == "manual_trim"
+                    and row.get("in_place") is True
+                ):
+                    continue
                 try:
                     if kind == "upload":
                         paths = self._raw_paths(row)
+                        snapshot["raw_paths"][row["id"]] = paths
                     else:
                         paths = [
                             storage_path(self.settings, row, "work", row["id"])
@@ -203,9 +265,9 @@ class DatasetManager:
                     snapshot["reference_errors"][(kind, row["id"])] = str(exc)
         return snapshot
 
-    def _validate(self, records, paths, snapshot=None):
+    def _validate(self, records, paths, snapshot=None, context=None):
         snapshot = self._snapshot() if snapshot is None else snapshot
-        context = self._safety_context()
+        context = self._safety_context() if context is None else context
         candidates = {self._safe(p, context) for p in paths}
         paths = sorted(
             (p for p in candidates if not any(parent in candidates for parent in p.parents)),
@@ -269,10 +331,17 @@ class DatasetManager:
     def listing(self):
         results = []
         snapshot = self._snapshot()
+        # Build the roots once: every candidate used to recompute them, which
+        # dominated the listing on slow shared storage.
+        context = self._safety_context()
         groups = self.collections(snapshot["upload"])
         selections = [("raw", c["id"], c) for c in groups]
         for job in snapshot["job"]:
             if job["state"] == "DELETED":
+                continue
+            # An in-place trim keeps the source job's dataset and only records
+            # history on it; listing the trim job would duplicate the path.
+            if job.get("operation") == "manual_trim" and job.get("in_place") is True:
                 continue
             try:
                 dataset_for_job(self.settings, job)
@@ -313,6 +382,25 @@ class DatasetManager:
                 "deletion_id": deletion_id,
                 "deletable": False,
                 "paths": [],
+                "trimmed": kind == "result"
+                and bool(row.get("manual_trim_history")),
+                "manual_trim_history": (
+                    [
+                        {
+                            key: entry.get(key)
+                            for key in (
+                                "job_id",
+                                "episode_index",
+                                "frames_kept",
+                                "at",
+                            )
+                        }
+                        for entry in row.get("manual_trim_history") or []
+                        if isinstance(entry, dict)
+                    ][-8:]
+                    if kind == "result"
+                    else []
+                ),
             }
             try:
                 _, _, records, paths = self._selection(
@@ -320,9 +408,11 @@ class DatasetManager:
                     identifier,
                     groups=groups,
                     job=row if kind == "result" else None,
+                    context=context,
+                    paths_cache=snapshot["raw_paths"],
                 )
                 item["paths"] = [str(p) for p in paths]
-                self._validate(records, paths, snapshot)
+                self._validate(records, paths, snapshot, context)
                 item["deletable"] = True
                 item["reason"] = ""
             except (DomainError, OSError, ValueError, KeyError) as exc:

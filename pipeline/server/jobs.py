@@ -24,6 +24,7 @@ from .episode_validation import EpisodeValidationError, validate_episode_policy
 from .merges import MergeRunner
 from .providers import RuntimeCatalog
 from .quality import DOCTOR_CHECK_IDS, doctor_gate
+from .static_intervals import ALGORITHM as STATIC_INTERVAL_ALGORITHM
 from .storage import (
     data_directory,
     prepare_storage,
@@ -143,7 +144,7 @@ class JobRunner:
             )
         if trim_idle_frames and trim_static_intervals:
             raise DomainError(
-                "“删除首尾静止帧”与“删除全程静止区间”不能同时开启", 400
+                "“删除首尾静止帧”与“删除静止帧”不能同时开启", 400
             )
         if (
             (trim_idle_frames or trim_static_intervals)
@@ -213,7 +214,7 @@ class JobRunner:
                     **({"invalid_episode_policy": policy} if policy != "fail" else {}),
                     **({"trim_idle_frames": True} if trim_idle_frames else {}),
                     **(
-                        {"trim_static_intervals": True}
+                        {"trim_static_intervals": STATIC_INTERVAL_ALGORITHM}
                         if trim_static_intervals
                         else {}
                     ),
@@ -268,6 +269,9 @@ class JobRunner:
                 "conversion_options": options,
                 "trim_idle_frames": trim_idle_frames,
                 "trim_static_intervals": trim_static_intervals,
+                "interval_algorithm": (
+                    STATIC_INTERVAL_ALGORITHM if trim_static_intervals else None
+                ),
                 "capture_mode": manifests[0]["capture_mode"],
                 "error": None,
             }
@@ -546,7 +550,7 @@ class JobRunner:
         if job.get("operation") == "subtask_export":
             self.subtask_exports.run(job)
             return
-        if job.get("operation") == "stationary_trim":
+        if job.get("operation") in {"stationary_trim", "manual_trim"}:
             self.trims.run(job)
             return
         self.save(
@@ -889,7 +893,7 @@ class JobRunner:
                     frame_count=expected_frames,
                 )
             elif job.get("trim_static_intervals"):
-                self.save(job, stage="检测并删除全程静止区间")
+                self.save(job, stage="检测并删除静止帧")
                 trimmed = self.trims.apply_intervals_to_conversion(
                     job, work, allocation, info
                 )

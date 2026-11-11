@@ -134,10 +134,47 @@ def test_server_page_scripts_load_before_login(settings_factory):
         assert page.status_code == 200
         # The page's own scripts must load before login: a script that 401s is
         # never retried by boot(), so its panel would silently stay dead.
-        for name in ("theme.js", "clipboard.js", "client-replay.js", "app.js", "annotations.js"):
+        for name in (
+            "theme.js",
+            "clipboard.js",
+            "client-replay.js",
+            "app.js",
+            "annotations.js",
+        ):
             assert f"/assets/{name}" in page.text
             assert http.get(f"/assets/{name}").status_code == 200, name
         assert http.get("/api/annotations").status_code == 401
+
+
+def test_job_list_summary_omits_detail_reports(settings_factory):
+    s = settings_factory("server")
+    app = create_app(s, background=False)
+    row = {
+        "id": "job-summary",
+        "key": "job-summary",
+        "created_at": 1,
+        "state": "CONVERTED",
+        "robot_report": {"detail": "x" * 100},
+        "alignment_report": {"frames": 1},
+        "episode_diagnostics": [{"passed": True}],
+        "source_manifest_hashes": {"file": "hash"},
+        "selection_report": {"kept": 1},
+    }
+    app.state.ingest.store.put("job", row["id"], row)
+    headers = {"Authorization": "Bearer " + s.token}
+    with TestClient(app) as http:
+        full = http.get("/api/jobs", headers=headers).json()[0]
+        slim = http.get("/api/jobs?summary=true", headers=headers).json()[0]
+    # Progress rendering keeps the light reports; the heavy ones stay in detail.
+    assert slim["selection_report"] == {"kept": 1}
+    for field in (
+        "robot_report",
+        "alignment_report",
+        "episode_diagnostics",
+        "source_manifest_hashes",
+    ):
+        assert field in full
+        assert field not in slim
 
 
 def test_report_page_is_server_only():

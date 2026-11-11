@@ -143,7 +143,7 @@ def runtime_settings(settings_factory, monkeypatch, profile):
 def test_registered_provider_and_profile_hash(profile):
     assert isinstance(get_provider("arx_kinesthetic"), ARXKinestheticProvider)
     assert digest(profile) == (
-        "0e0ed64b4a7c9b26b0d93844ccece8e2b96ca1bf31d85869a9addb2ab5c828f7"
+        "8831ad8f8c9588885fd2de36ab0eba41a21a303cee640ed4f98eb6b38d118557"
     )
     assert {
         blocker["field"]
@@ -223,9 +223,14 @@ def test_prepare_preserves_next_action_mask_and_png(tmp_path, profile):
         path,
         tmp_path / "adjusted",
         profile,
-        options={"gripper_closure": {"minimum_percent": 90}},
+        options={"gripper_closure": {"increase_percent": 10}},
     )
     assert "gripper_closure" in adjusted["action_corrections"]
+    # DAgger labels action[t] = state[t + 1], so the detected interval is
+    # shifted back by one frame before the action is rewritten.
+    assert (
+        adjusted["action_corrections"]["gripper_closure"]["action_state_offset"] == 1
+    )
 
 
 @pytest.mark.parametrize(

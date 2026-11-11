@@ -29,7 +29,7 @@ class QualityRunner:
 
     def runner_close_allocation(self):
         if self._close_allocation:
-            self._close_allocation()
+            return self._close_allocation()
 
     def save(self, row, **fields):
         row.update(**fields, updated_at=now())
@@ -76,6 +76,7 @@ class QualityRunner:
 
     def run(self, row):
         self.save(row, state="RUNNING", stage="验证数据集结构", started_at=now())
+        allocation_opened = False
         try:
             job = self.store.get("job", row["job_id"])
             data = dataset_for_job(self.settings, job)
@@ -91,6 +92,7 @@ class QualityRunner:
                 raise DomainError("未安装 letools / Doctor 依赖")
             # One allocation for validate and doctor; without this each call
             # enters the Slurm queue separately.
+            allocation_opened = True
             allocation = self.runner_open_allocation(work)
             code, _, err = self.command(
                 [tool, "validate", str(data), "--deep"],
@@ -127,7 +129,6 @@ class QualityRunner:
                 raise DomainError(
                     "Doctor 未生成有效报告：" + err.read_text(errors="replace")[-1200:]
                 ) from exc
-            self.runner_close_allocation()
             self.save(row, doctor_report=report)
             info = json.loads((data / "meta/info.json").read_text())
             gate = doctor_gate(report, info, code)
@@ -155,3 +156,8 @@ class QualityRunner:
                 error=str(exc),
                 finished_at=now(),
             )
+        finally:
+            if allocation_opened:
+                error = self.runner_close_allocation()
+                if error:
+                    self.save(row, resource_cleanup_error=str(error))

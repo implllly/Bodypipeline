@@ -236,9 +236,7 @@ def test_environment_prefers_per_task_credentials(service):
 def test_environment_routes_with_the_task_model_on_the_server_gateway(service):
     runner, _store, _src, _data = service
     runner.settings.argus_base_url = "https://gateway.example/v1"
-    env = argus_annotation.environment(
-        runner.settings, {"model": "gpt-6.1-sol"}, {}
-    )
+    env = argus_annotation.environment(runner.settings, {"model": "gpt-6.1-sol"}, {})
     assert env["PIPELINE_ARGUS_BASE_URL"] == "https://gateway.example/v1"
     assert env["PIPELINE_ARGUS_GENERIC_GATEWAY"] == "1"
     assert env["PIPELINE_ARGUS_ROUTE_MODEL"] == "gpt-6.1-sol"
@@ -553,7 +551,9 @@ def test_resume_restarts_preparation_only_before_any_paid_label(service):
     )
     assert runner.resume(cancelled["id"])["fresh_start"] is True
     store.put(
-        "annotation", cancelled["id"], dict(store.get("annotation", cancelled["id"]), state="COMPLETED")
+        "annotation",
+        cancelled["id"],
+        dict(store.get("annotation", cancelled["id"]), state="COMPLETED"),
     )
 
     labelled = runner.enqueue("job-1")
@@ -643,6 +643,40 @@ def test_command_maps_every_annotation_parameter_to_argus(service):
     ]
 
 
+def test_unlimited_annotation_bypasses_all_monetary_limits_and_keeps_costs(service):
+    runner, store, _src, data = service
+    runner.settings.argus_annotation_unlimited = True
+    runner.settings.argus_models = ["gateway/unpriced"]
+    runner.settings.argus_model = "gateway/unpriced"
+    store.put(
+        "analysis",
+        "spent",
+        {
+            "id": "spent",
+            "cost_usd": 1000,
+            "created_at": time.time(),
+        },
+    )
+    budget = runner.budget("job-1", 2)
+    assert budget["unlimited"] is True
+    assert budget["daily_used_usd"] == 1000
+    assert budget["available_usd"] is None
+    assert budget["task_cap_usd"] is None
+    assert budget["daily_cap_usd"] is None
+    assert runner.options()["unlimited"] is True
+    # Ignore stale clients' explicit small caps under deployment-wide no-cap mode.
+    row = runner.enqueue("job-1", cap_usd=0.01)
+    assert row["cap_usd"] is None
+    argv = argus_annotation.command(runner.settings, row, data, Path("/tmp/work"))
+    assert "--no-cap" in argv and "--cap" not in argv
+    json.dumps(row, allow_nan=False)
+    store.put("annotation", row["id"], dict(row, state="PARTIAL", cost_usd=500))
+    resumed = runner.resume(row["id"])
+    assert resumed["cap_usd"] is None
+    assert resumed["cost_usd"] == 500
+    assert resumed["budget"]["daily_used_usd"] == 1500
+
+
 def test_outputs_episode_and_cost_are_read_from_argus_sidecars(tmp_path):
     work = tmp_path / "annotation"
     argus = work / "argus"
@@ -666,7 +700,10 @@ def test_outputs_episode_and_cost_are_read_from_argus_sidecars(tmp_path):
                 "duration_s": 4.2,
                 "event_labels": [{"start_s": 0}],
                 "completion": {"task_completed": "success"},
-                "_meta": {"model": "openai/gpt-6-astra", "run_episode": "episode_000000"},
+                "_meta": {
+                    "model": "openai/gpt-6-astra",
+                    "run_episode": "episode_000000",
+                },
             }
         )
     )
@@ -676,7 +713,9 @@ def test_outputs_episode_and_cost_are_read_from_argus_sidecars(tmp_path):
                 "episode_dir": str(work / "episodes/episode_000001"),
                 "episode_prompt": "fold",
                 "parse_ok": True,
-                "labels": {"completion": {"task_completed": False, "failure_kind": "grasp"}},
+                "labels": {
+                    "completion": {"task_completed": False, "failure_kind": "grasp"}
+                },
                 "usage": {"est_cost_usd": 0.18},
             }
         )
@@ -706,9 +745,12 @@ def test_outputs_episode_and_cost_are_read_from_argus_sidecars(tmp_path):
     assert rows[1]["failure_kind"] == "grasp"
     assert rows[2]["labels_available"] is False
     assert "output limit" in rows[2]["label_failure"]["why"]
-    assert argus_annotation.episode(work, "episode_000001")["labels"]["completion"][
-        "failure_kind"
-    ] == "grasp"
+    assert (
+        argus_annotation.episode(work, "episode_000001")["labels"]["completion"][
+            "failure_kind"
+        ]
+        == "grasp"
+    )
     cost = argus_annotation.cost(work)
     assert cost["cost_usd"] == 0.42
     assert cost["reserved_cost_usd"] == 0.5
@@ -768,15 +810,15 @@ def test_clip_endpoint_lists_and_streams_byte_ranges(service):
             f"/api/annotations/{row['id']}/episodes/episode_000000/clips/exo"
         )
 
-        video = http.get(
-            found[0]["url"], headers={**headers, "Range": "bytes=4-11"}
-        )
+        video = http.get(found[0]["url"], headers={**headers, "Range": "bytes=4-11"})
         assert video.status_code == 206
         assert video.content == payload[4:12]
         assert video.headers["content-range"] == f"bytes 4-11/{len(payload)}"
         assert video.headers["accept-ranges"] == "bytes"
 
-        beyond = http.get(found[0]["url"], headers={**headers, "Range": "bytes=999999-"})
+        beyond = http.get(
+            found[0]["url"], headers={**headers, "Range": "bytes=999999-"}
+        )
         assert beyond.status_code == 416
         missing = http.get(
             f"/api/annotations/{row['id']}/episodes/episode_000000/clips/wrist_left",
@@ -901,15 +943,19 @@ def test_api_options_candidates_enqueue_and_delete_guard(service):
         aid = created.json()["id"]
         assert http.get("/api/annotations", headers=headers).json()[0]["id"] == aid
         assert http.get(f"/api/annotations/{aid}", headers=headers).status_code == 200
-        assert http.get(f"/api/annotations/{aid}/budget", headers=headers).json()[
-            "task_cap_usd"
-        ] == 2.0
+        assert (
+            http.get(f"/api/annotations/{aid}/budget", headers=headers).json()[
+                "task_cap_usd"
+            ]
+            == 2.0
+        )
         assert http.get(f"/api/annotations/{aid}/episodes", headers=headers).json() == {
             "episodes": []
         }
-        assert http.get(f"/api/annotations/{aid}/logs", headers=headers).json()["logs"][
-            0
-        ] == "run"
+        assert (
+            http.get(f"/api/annotations/{aid}/logs", headers=headers).json()["logs"][0]
+            == "run"
+        )
         cancelled = http.post(f"/api/annotations/{aid}/cancel", headers=headers)
         assert cancelled.json()["state"] == "CANCELLED"
 
@@ -975,9 +1021,10 @@ def test_api_accepts_task_credentials_without_persisting_them(service):
         assert export.status_code == 200
         assert "api-secret" not in export.text
 
-        assert http.post(f"/api/annotations/{aid}/cancel", headers=headers).json()[
-            "state"
-        ] == "CANCELLED"
+        assert (
+            http.post(f"/api/annotations/{aid}/cancel", headers=headers).json()["state"]
+            == "CANCELLED"
+        )
         assert aid not in runner.credentials
 
         resumed = http.post(
@@ -989,9 +1036,10 @@ def test_api_accepts_task_credentials_without_persisting_them(service):
         assert resumed.json()["state"] == "QUEUED"
         assert "resume-secret" not in resumed.text
         assert runner.credentials[aid]["api_key"] == "resume-secret"
-        assert http.post(f"/api/annotations/{aid}/cancel", headers=headers).json()[
-            "state"
-        ] == "CANCELLED"
+        assert (
+            http.post(f"/api/annotations/{aid}/cancel", headers=headers).json()["state"]
+            == "CANCELLED"
+        )
 
         # Older callers post no body; server defaults still have to work.
         legacy = http.post(f"/api/annotations/{aid}/resume", headers=headers)
@@ -1056,6 +1104,7 @@ def test_annotation_storage_area(settings_factory, tmp_path):
     s = settings_factory("server", root=tmp_path / "state", data_root=tmp_path / "data")
     (tmp_path / "data").mkdir()
     row = {"data_layout": "robot_type_v1", "robot_type": "agilex_aloha"}
-    assert storage_path(s, row, "annotations", "abc") == (
-        tmp_path / "data/agilex_aloha/annotations/abc"
-    ).resolve()
+    assert (
+        storage_path(s, row, "annotations", "abc")
+        == (tmp_path / "data/agilex_aloha/annotations/abc").resolve()
+    )

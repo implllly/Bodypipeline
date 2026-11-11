@@ -32,6 +32,7 @@ let config = null,
   serverDatasets = [],
   serverDeletions = [],
   serverAnnotations = [],
+  serverLoaded = new Set(),
   deletingDataset = null,
   selectedMergeDatasets = new Set(),
   activeVersionConversionSource = null,
@@ -83,6 +84,7 @@ const names = {
   VERSION_CONVERTED: "版本转换",
   SUBTASK_EXPORTED: "Subtask 数据集",
   STATIONARY_TRIMMED: "首尾裁剪",
+  MANUAL_TRIMMED: "手动裁剪",
   DELETING: "正在删除",
   DELETE_FAILED: "删除失败",
   DELETED: "已删除",
@@ -95,7 +97,7 @@ const jobBadge = (job) => job.operation === "merge" && job.state === "CONVERTED"
     : badge(job.state);
 // Every conversion-like job reuses CONVERTED, but their stage text differs.
 const jobStageText = (job) => {
-  if (job.operation === "subtask_export" || job.operation === "stationary_trim") return job.stage;
+  if (job.operation === "subtask_export" || job.operation === "stationary_trim" || job.operation === "manual_trim") return job.stage;
   return job.state === "CONVERTED" && job.operation !== "merge"
     ? "转换完成（独立质检见报告）"
     : job.stage;
@@ -105,10 +107,25 @@ const sourceBadge = (job) => {
   if (job.operation === "version_conversion") return badge("VERSION_CONVERTED") + (job.capture_mode === "mock" ? " " + badge("MOCK") : "");
   if (job.operation === "subtask_export") return badge("SUBTASK_EXPORTED") + (job.capture_mode === "mock" ? " " + badge("MOCK") : "");
   if (job.operation === "stationary_trim") return badge("STATIONARY_TRIMMED") + (job.capture_mode === "mock" ? " " + badge("MOCK") : "");
+  if (job.operation === "manual_trim") return badge("MANUAL_TRIMMED") + (job.capture_mode === "mock" ? " " + badge("MOCK") : "");
   const upload = serverUploads.find((u) => u.id === job.upload_id);
   if (job.capture_mode === "mock" || upload?.capture_mode === "mock") return badge("MOCK");
   if (job.capture_mode === "imported" || upload?.capture_mode === "imported" || upload?.source_kind === "raw_import") return badge("IMPORTED");
   return "";
+};
+// In-place trims replace the source dataset, so the trim job must not be listed
+// as another dataset; the source job records manual_trim_history instead.
+const isInPlaceManualTrim = (job) => job.operation === "manual_trim" && job.in_place === true;
+const manualTrimHistory = (job) => Array.isArray(job.manual_trim_history) ? job.manual_trim_history : [];
+const trimmedBadge = (job) => manualTrimHistory(job).length ? '<span class="badge">已裁剪</span>' : "";
+const manualTrimSummary = (job) => {
+  const history = manualTrimHistory(job);
+  if (!history.length) return "";
+  const last = history[history.length - 1] || {};
+  const parts = [`已裁剪 ${history.length} 次`];
+  if (last.episode_index != null) parts.push(`最近 Episode ${last.episode_index}`);
+  if (last.frames_kept != null) parts.push(`当前保留 ${last.frames_kept} 帧`);
+  return `<span class="sub">${esc(parts.join(" · "))}</span>`;
 };
 const collectionLocation = (collection) => collection.target === "imported"
   ? collection.uploads?.[0]?.import_path || "历史数据目录"
@@ -123,12 +140,14 @@ const badge = (s) =>
   `<span class="badge ${["FAILED", "FAIL", "RECOVERY_REQUIRED", "DELETE_FAILED"].includes(s) ? "error" : ["RUNNING", "RECORDING", "UPLOADING", "STARTING", "STOPPING", "DELETING"].includes(s) ? "busy" : ["BLOCKED", "QUARANTINED", "RETRY", "REVIEW", "INTERRUPTED", "WARN", "CONVERTED", "UNAVAILABLE"].includes(s) ? "warn" : ""}">${esc(names[s] || s)}</span>`;
 function notice(message, error = false) {
   const box = $("notice");
+  delete box.dataset.pollError;
   box.hidden = false;
   box.className = error ? "error" : "";
   box.textContent = message;
 }
 function noticeWithLink(prefix, label, href) {
   const box = $("notice");
+  delete box.dataset.pollError;
   box.hidden = false;
   box.className = "";
   box.textContent = prefix + " ";
@@ -160,6 +179,11 @@ async function api(path, method = "GET", body) {  const controller = new AbortCo
     );
   }
   return data;
+  } catch (e) {
+    // A timed-out request surfaces as a bare AbortError; show the cause instead
+    // of the browser's "signal is aborted without reason" wording.
+    if (e.name === "AbortError") throw Error("请求超时，请稍后重试");
+    throw e;
   } finally { clearTimeout(timeout); }
 }
 function showLogin() {
@@ -675,6 +699,7 @@ async function refreshDatasetManagement() {
     const managed = await api("/api/datasets");
     serverDatasets = managed.datasets;
     serverDeletions = managed.deletions;
+    serverLoaded.add("datasets");
     renderServer(serverUploads, serverJobs);
   } catch (e) {
     if (serverTab === "merge") notice(e.message, true);
@@ -682,42 +707,84 @@ async function refreshDatasetManagement() {
     datasetManagementPolling = false;
   }
 }
+// Each server panel declares the lists it renders. ``jobs`` is shared by every
+// panel, while candidates and annotations are only needed by the panel that
+// shows them.
+const SERVER_PANEL_DATA = {
+  uploads: ["collections", "jobs"],
+  convert: ["collections", "jobs", "versionCandidates", "trimCandidates"],
+  results: ["jobs", "viewer"],
+  merge: ["jobs", "mergeCandidates"],
+  annotations: ["jobs", "annotations"],
+};
+const SERVER_DATA_REQUESTS = {
+  collections: "/api/collections?summary=true",
+  jobs: "/api/jobs?summary=true",
+  viewer: "/api/viewer",
+  mergeCandidates: "/api/merge-candidates",
+  versionCandidates: "/api/version-conversion-candidates",
+  trimCandidates: "/api/trim-candidates",
+  annotations: "/api/annotations",
+};
 async function refresh() {
   if (!config || polling) return;
+  const session = config, tab = serverTab;
   polling = true;
   try {
     if (config.role === "client") {
       const rows = await api("/api/capture-status");
       if (config?.role === "client") acceptCaptures(rows);
     } else {
-      const [uploads, jobs, v, mergeCandidates, versionConversionCandidates, trimCandidates, annotationRows] = await Promise.all([
-        api("/api/collections"),
-        api("/api/jobs"),
-        api("/api/viewer"),
-        api("/api/merge-candidates"),
-        api("/api/version-conversion-candidates"),
-        api("/api/trim-candidates"),
-        api("/api/annotations"),
-      ]);
-      serverCollections = uploads;
-      serverUploads = uploads.flatMap((c) => c.uploads);
-      serverJobs = jobs;
-      serverMergeCandidates = mergeCandidates;
-      serverVersionConversionCandidates = versionConversionCandidates;
-      serverTrimCandidates = trimCandidates;
-      serverAnnotations = annotationRows;
-      renderServer(serverUploads, jobs);
-      if (activeTrimPreviewId && !["COMPLETED", "FAILED", "INTERRUPTED"].includes(trimPreview?.state)) {
+      // Fetch only the lists the current panel renders. Candidates and
+      // annotations are expensive, and the merge-candidates endpoint can take
+      // seconds, so hidden panels must not pay for them every polling cycle.
+      const keys = SERVER_PANEL_DATA[tab] || SERVER_PANEL_DATA.convert;
+      const settled = await Promise.allSettled(
+        keys.map((key) => api(SERVER_DATA_REQUESTS[key])),
+      );
+      if (config !== session) return;
+      let failure = null;
+      settled.forEach((entry, index) => {
+        const key = keys[index];
+        if (entry.status === "rejected") {
+          failure = failure || entry.reason;
+          return;
+        }
+        const value = entry.value;
+        serverLoaded.add(key);
+        if (key === "collections") {
+          serverCollections = value;
+          serverUploads = value.flatMap((c) => c.uploads);
+        } else if (key === "jobs") serverJobs = value;
+        else if (key === "viewer") renderViewerStatus(value);
+        else if (key === "mergeCandidates") serverMergeCandidates = value;
+        else if (key === "versionCandidates") serverVersionConversionCandidates = value;
+        else if (key === "trimCandidates") serverTrimCandidates = value;
+        else if (key === "annotations") serverAnnotations = value;
+      });
+      renderServer(serverUploads, serverJobs);
+      if (
+        serverTab === "convert" &&
+        activeTrimPreviewId &&
+        !["COMPLETED", "FAILED", "INTERRUPTED"].includes(trimPreview?.state)
+      ) {
         await refreshTrimPreview();
       }
-      renderViewerStatus(v);
-      void refreshDatasetManagement();
-      if (selectedJob) await showJob();
+      if (serverTab === "merge") void refreshDatasetManagement();
+      if (selectedJob && serverTab === "results") await showJob();
+      if (failure && serverTab === tab) {
+        notice(failure.message, true);
+        $("notice").dataset.pollError = "true";
+      } else if (!failure && $("notice").dataset.pollError) {
+        $("notice").hidden = true;
+        delete $("notice").dataset.pollError;
+      }
     }
   } catch (e) {
     notice(e.message, true);
   } finally {
     polling = false;
+    if (config?.role === "server" && config === session && serverTab !== tab) void refresh();
   }
 }
 function setSidebarOpen(open, restoreFocus = false) {
@@ -814,7 +881,10 @@ function setServerTab(tab, updateHistory = true) {
   setSidebarOpen(false, wasOpen);
   if (tab === "annotations") window.AnnotationUI?.show();
   else window.AnnotationUI?.hide();
-  void refreshDatasetManagement();
+  // The dataset merge list is only rendered by the merge panel; other panels
+  // should not keep re-reading it on every tab switch.
+  if (tab === "merge") void refreshDatasetManagement();
+  void refresh();
 }
 function selectJob(id) {
   if (id !== selectedJob) {
@@ -857,7 +927,11 @@ function conversionCorrectionSummary(job) {
   const reports = job.alignment_report?.episodes || (job.alignment_report ? [job.alignment_report] : []);
   const corrections = reports.map((r) => r.action_corrections?.gripper_closure).filter(Boolean);
   const changed = corrections.reduce((count, r) => count + r.changed_frames_any_channel, 0);
-  return `<p class="small">夹持阶段最小闭合度：<strong>${esc(options.minimum_percent)}%</strong>（名义行程）${corrections.length ? ` · 已调整 ${esc(changed)} 帧 · ${esc(corrections.length)} 个 episodes 已检查` : " · 等待处理"}</p>`;
+  // Jobs queued before the additive-shift change keep their original snapshot.
+  const label = options.increase_percent == null
+    ? `夹持阶段最小闭合度（旧版）：<strong>${esc(options.minimum_percent)}%</strong>（名义行程）`
+    : `夹持阶段闭合度增加：<strong>+${esc(options.increase_percent)}</strong> 个百分点（名义行程）`;
+  return `<p class="small">${label}${corrections.length ? ` · 已调整 ${esc(changed)} 帧 · ${esc(corrections.length)} 个 episodes 已检查` : " · 等待处理"}</p>`;
 }
 function chosenCollection() {
   return serverCollections.find((c) => c.id === $("conversion-upload").value && rowRobotType(c) === $("server-robot-type").value);
@@ -879,7 +953,7 @@ function updateConversionOptions() {
   if (conversionOptionsRuntime !== identity) {
     conversionOptionsRuntime = identity;
     $("conversion-closure-enabled").checked = false;
-    $("conversion-closure-percent").value = capability?.default_percent ?? "";
+    $("conversion-closure-percent").value = capability?.default_increase_percent ?? "";
   }
   $("conversion-closure").hidden = !capability;
   if (!capability) {
@@ -892,15 +966,15 @@ function updateConversionOptions() {
   $("conversion-closure-percent").disabled = busy || !enabled;
   $("conversion-closure-percent").required = enabled;
   if (capability) {
-    $("conversion-closure-percent").min = capability.minimum_percent;
-    $("conversion-closure-percent").max = capability.maximum_percent;
+    $("conversion-closure-percent").min = capability.minimum_increase_percent;
+    $("conversion-closure-percent").max = capability.maximum_increase_percent;
   }
   return !enabled || $("conversion-closure-percent").checkValidity();
 }
 function selectedConversionOptions() {
   const supported = selectedConversionRuntime()?.conversion_capabilities?.gripper_closure;
   return supported && $("conversion-closure-enabled").checked
-    ? { gripper_closure: { minimum_percent: Number($("conversion-closure-percent").value) } }
+    ? { gripper_closure: { increase_percent: Number($("conversion-closure-percent").value) } }
     : {};
 }
 function updateConversionSelection() {
@@ -1270,14 +1344,17 @@ function renderServer(uploads, jobs) {
   $("metric-uploads").textContent = uploads.filter((x) => x.state === "COMMITTED").length;
   const conversions = jobs.filter((j) => j.operation !== "merge");
   $("metric-jobs").textContent = conversions.length;
-  $("nav-upload-count").textContent = uploads.length;
   $("nav-job-count").textContent = conversions.length;
-  $("nav-merge-count").textContent = serverDatasets.filter((d) => rowRobotType(d) === type).length;
-  $("nav-result-count").textContent = jobs.filter((j) => j.dataset_available).length;
-  $("nav-annotation-count").textContent = serverAnnotations.filter((a) => ["QUEUED", "RUNNING"].includes(a.state)).length;
-  $("metric-completed").textContent = jobs.filter((x) => x.dataset_available).length;
+  if (serverLoaded.has("datasets")) {
+    $("nav-merge-count").textContent = serverDatasets.filter((d) => rowRobotType(d) === type).length;
+  }
+  $("nav-result-count").textContent = jobs.filter((j) => j.dataset_available && !isInPlaceManualTrim(j)).length;
+  if (serverLoaded.has("annotations")) {
+    $("nav-annotation-count").textContent = serverAnnotations.filter((a) => ["QUEUED", "RUNNING"].includes(a.state)).length;
+  }
+  $("metric-completed").textContent = jobs.filter((x) => x.dataset_available && !isInPlaceManualTrim(x)).length;
   const collections = serverCollections.filter((c) => rowRobotType(c) === type);
-  $("nav-upload-count").textContent = collections.length;
+  if (serverLoaded.has("collections")) $("nav-upload-count").textContent = collections.length;
   const selected = $("conversion-upload").value;
   const options = '<option value="">请选择数据集</option>' + collections.map((c) => `<option value="${esc(c.id)}">${c.capture_mode === "mock" ? "[模拟] " : ""}${esc(c.dataset_name)} · ${c.ready_count}/${c.episode_count} episodes · ${esc(c.target)}/${esc(c.prefix)} · ${esc(c.id.slice(0, 6))}</option>`).join("");
   replaceOptions($("conversion-upload"), options, collections.some((c) => c.id === selected) ? selected : "");
@@ -1312,11 +1389,11 @@ function renderServer(uploads, jobs) {
     `<tr><td><strong class="task-name">${esc(c.dataset_name)}</strong><span class="sub">${esc(c.id.slice(0, 12))} · ${esc(collectionLocation(c))}</span></td><td>${esc([...new Set(c.uploads.map((u) => u.robot_id))].join(", "))} ${c.capture_mode === "mock" ? badge("MOCK") : c.target === "imported" ? badge("IMPORTED") : ""}</td><td>${bytes(c.total_bytes)}<span class="sub">${c.episode_count} 个 episodes</span></td><td>${c.ready_count} / ${c.episode_count}</td><td><button class="secondary" data-process="${esc(c.id)}">查看 / 批量转换</button></td></tr>`
   ).join("") : '<tr><td colspan="5" class="empty">请选择机器人类型；该类型的数据集将在此显示。</td></tr>';
   $("job-list").innerHTML = conversions.length ? conversions.map((j) =>
-    `<tr><td><strong class="task-name">${esc(j.dataset_name || j.instruction || j.id.slice(0, 12))}</strong><span class="sub">${esc(j.id.slice(0, 12))} · ${esc(jobOriginSummary(j))}</span>${j.operation === "version_conversion" ? `<span class="sub">来源：${esc(j.source_dataset_name)} · ${esc(j.source_format)} → ${esc(j.target_format)}</span>` : ""}${j.operation === "subtask_export" ? `<span class="sub">Subtask：${esc(j.source_dataset_name)} · 标注 ${esc(String(j.source_annotation_id || j.annotation_id || "").slice(0, 12))} · 覆盖 ${esc(Math.round(100 * (j.subtask_summary?.ratio ?? 0)))}%</span>` : ""}${j.operation === "stationary_trim" ? `<span class="sub">首尾裁剪：${esc(j.source_dataset_name)} · 计划删除 ${esc(j.trim_summary?.frames_removed ?? "?")} 帧</span>` : ""}${j.trim_idle_frames ? `<span class="sub">转换时首尾裁剪：删除 ${esc(j.trim_summary?.frames_removed ?? "?")} 帧</span>` : ""}${j.trim_static_intervals ? `<span class="sub">转换时全程静止裁剪：删除 ${esc(j.interval_summary?.frames_removed ?? "?")} 帧 · ${esc(j.interval_summary?.source_episodes ?? "?")} → ${esc(j.interval_summary?.output_episodes ?? "?")} 个 episodes</span>` : ""}</td><td>LeRobot ${esc(j.target_format)}<span class="sub">${esc(j.operation === "subtask_export" ? "复制并写入 subtask_index + 深度验证" : j.run_doctor === false ? "仅转换 + 深度验证" : "转换 + Doctor")}</span></td><td>${esc(jobStageText(j))}${j.error ? `<span class="sub job-error">${esc(j.error)}</span>` : ""}</td><td>${jobBadge(j)} ${sourceBadge(j)}</td><td><button class="secondary" data-detail="${esc(j.id)}">详情与结果</button></td></tr>`
+    `<tr><td><strong class="task-name">${esc(j.dataset_name || j.instruction || j.id.slice(0, 12))}</strong><span class="sub">${esc(j.id.slice(0, 12))} · ${esc(jobOriginSummary(j))}</span>${j.operation === "version_conversion" ? `<span class="sub">来源：${esc(j.source_dataset_name)} · ${esc(j.source_format)} → ${esc(j.target_format)}</span>` : ""}${j.operation === "subtask_export" ? `<span class="sub">Subtask：${esc(j.source_dataset_name)} · 标注 ${esc(String(j.source_annotation_id || j.annotation_id || "").slice(0, 12))} · 覆盖 ${esc(Math.round(100 * (j.subtask_summary?.ratio ?? 0)))}%</span>` : ""}${j.operation === "stationary_trim" ? `<span class="sub">首尾裁剪：${esc(j.source_dataset_name)} · 计划删除 ${esc(j.trim_summary?.frames_removed ?? "?")} 帧</span>` : ""}${j.operation === "manual_trim" ? `<span class="sub">手动裁剪：${esc(j.source_dataset_name)} · Episode ${esc(j.manual_episode ?? "?")} · 删除 ${esc(j.manual_removed_frames ?? "?")} 帧</span>` : ""}${manualTrimSummary(j)}${j.trim_idle_frames ? `<span class="sub">转换时首尾裁剪：删除 ${esc(j.trim_summary?.frames_removed ?? "?")} 帧</span>` : ""}${j.trim_static_intervals ? `<span class="sub">转换时静止帧裁剪：删除 ${esc(j.interval_summary?.frames_removed ?? "?")} 帧 · ${esc(j.interval_summary?.static_intervals ?? "?")} 段静止帧</span>` : ""}</td><td>LeRobot ${esc(j.target_format)}<span class="sub">${esc(j.operation === "subtask_export" ? "复制并写入 subtask_index + 深度验证" : j.run_doctor === false ? "仅转换 + 深度验证" : "转换 + Doctor")}</span></td><td>${esc(jobStageText(j))}${j.error ? `<span class="sub job-error">${esc(j.error)}</span>` : ""}</td><td>${jobBadge(j)} ${sourceBadge(j)} ${trimmedBadge(j)}</td><td><button class="secondary" data-detail="${esc(j.id)}">详情与结果</button></td></tr>`
   ).join("") : '<tr><td colspan="5" class="empty">请选择机器人类型，查看该类型的转换任务。</td></tr>';
-  const available = jobs.filter((j) => j.dataset_available);
+  const available = jobs.filter((j) => j.dataset_available && !isInPlaceManualTrim(j));
   $("result-list").innerHTML = available.length ? available.map((j) =>
-    `<tr><td><strong class="task-name">${esc(j.dataset_name || j.instruction || j.id.slice(0, 12))}</strong><span class="sub">${esc(j.id.slice(0, 12))} · ${esc(episodeSelectionSummary(j))}</span><span class="sub">${j.operation === "version_conversion" ? `版本转换：${esc(j.source_format)} → ${esc(j.target_format)}` : j.operation === "stationary_trim" ? `首尾裁剪：删除 ${esc(j.trim_summary?.frames_removed ?? "?")} 帧 · 保留 ${esc(j.trim_summary?.frames_kept ?? "?")} 帧` : esc(j.instruction)}</span>${j.trim_idle_frames ? `<span class="sub">转换时首尾裁剪：删除 ${esc(j.trim_summary?.frames_removed ?? "?")} 帧 · 保留 ${esc(j.trim_summary?.frames_kept ?? "?")} 帧</span>` : ""}${j.trim_static_intervals ? `<span class="sub">转换时全程静止裁剪：删除 ${esc(j.interval_summary?.frames_removed ?? "?")} 帧 · 保留 ${esc(j.interval_summary?.frames_kept ?? "?")} 帧 · ${esc(j.interval_summary?.output_episodes ?? "?")} 个 episodes</span>` : ""}</td><td>LeRobot ${esc(j.target_format)}</td><td>${jobBadge(j)} ${sourceBadge(j)}</td><td>${datasetLocation(j)}</td><td><div class="action-row"><button class="primary" data-viewer="${esc(j.id)}">预览数据</button><button class="secondary" data-viewer="${esc(j.id)}" data-viewer-mode="batch">批量预览</button><button class="secondary" data-doctor="${esc(j.id)}">运行质检</button><button class="secondary" data-report-page="${esc(j.id)}">查看报告</button></div></td></tr>`
+    `<tr><td><strong class="task-name">${esc(j.dataset_name || j.instruction || j.id.slice(0, 12))}</strong><span class="sub">${esc(j.id.slice(0, 12))} · ${esc(episodeSelectionSummary(j))}</span><span class="sub">${j.operation === "version_conversion" ? `版本转换：${esc(j.source_format)} → ${esc(j.target_format)}` : j.operation === "stationary_trim" ? `首尾裁剪：删除 ${esc(j.trim_summary?.frames_removed ?? "?")} 帧 · 保留 ${esc(j.trim_summary?.frames_kept ?? "?")} 帧` : j.operation === "manual_trim" ? `手动裁剪：Episode ${esc(j.manual_episode ?? "?")} · 删除 ${esc(j.manual_summary?.frames_removed ?? j.manual_removed_frames ?? "?")} 帧 · 保留 ${esc(j.manual_summary?.frames_kept ?? "?")} 帧` : esc(j.instruction)}</span>${manualTrimSummary(j)}${j.trim_idle_frames ? `<span class="sub">转换时首尾裁剪：删除 ${esc(j.trim_summary?.frames_removed ?? "?")} 帧 · 保留 ${esc(j.trim_summary?.frames_kept ?? "?")} 帧</span>` : ""}${j.trim_static_intervals ? `<span class="sub">转换时静止帧裁剪：删除 ${esc(j.interval_summary?.frames_removed ?? "?")} 帧 · 保留 ${esc(j.interval_summary?.frames_kept ?? "?")} 帧 · 保留片段前后直接相连</span>` : ""}</td><td>LeRobot ${esc(j.target_format)}</td><td>${jobBadge(j)} ${sourceBadge(j)} ${trimmedBadge(j)}</td><td>${datasetLocation(j)}</td><td><div class="action-row"><button class="primary" data-viewer="${esc(j.id)}">预览数据</button><button class="secondary" data-viewer="${esc(j.id)}" data-viewer-mode="batch">批量预览</button><button class="secondary" data-doctor="${esc(j.id)}">运行质检</button><button class="secondary" data-report-page="${esc(j.id)}">查看报告</button></div></td></tr>`
   ).join("") : '<tr><td colspan="5" class="empty">请选择机器人类型，查看该类型已转换的数据集。受阻任务的原因可在“数据转换”查看。</td></tr>';
   updateMergeSelection();
   renderMergeJobs(jobs.filter((j) => j.operation === "merge"));
@@ -1327,7 +1404,7 @@ function renderDatasetManagement() {
   const search = $("dataset-search").value.trim().toLocaleLowerCase();
   const rows = serverDatasets.filter((d) => rowRobotType(d) === type && (!kind || d.kind === kind) && (!search || `${d.dataset_name} ${d.id}`.toLocaleLowerCase().includes(search)));
   const paths = (d) => !d.paths.length ? '<span class="small muted">范围见删除记录</span>' : `<code>${esc(d.paths[0])}</code>${d.paths.length > 1 ? `<details><summary>共 ${d.paths.length} 个路径</summary>${d.paths.slice(1).map((p) => `<div><code>${esc(p)}</code></div>`).join("")}</details>` : ""}`;
-  const html = rows.length ? rows.map((d) => `<tr><td><strong class="task-name">${esc(d.dataset_name)}</strong><span class="sub">${d.kind === "raw" ? "原始数据" : "LeRobot " + esc(d.target_format || "数据集")} · ${esc(d.id.slice(0, 12))}</span></td><td>${d.episode_count ?? "—"} episodes<span class="sub">${d.total_bytes == null ? "" : bytes(d.total_bytes)}</span></td><td class="dataset-paths">${paths(d)}</td><td>${badge(d.state)}${d.reason ? `<span class="sub job-error">${esc(d.reason)}</span>` : ""}</td><td><button class="danger" data-delete-dataset="${esc(d.id)}" data-delete-kind="${d.kind}" ${busy || !d.deletable ? "disabled" : ""}>删除${d.kind === "raw" ? "原始数据" : "数据集"}</button></td></tr>`).join("") : '<tr><td colspan="5" class="empty">请选择机器人类型；可管理的原始数据和 LeRobot 数据集将在此显示。</td></tr>';
+  const html = rows.length ? rows.map((d) => `<tr><td><strong class="task-name">${esc(d.dataset_name)}</strong><span class="sub">${d.kind === "raw" ? "原始数据" : "LeRobot " + esc(d.target_format || "数据集")} · ${esc(d.id.slice(0, 12))}</span>${manualTrimSummary(d)}</td><td>${d.episode_count ?? "—"} episodes<span class="sub">${d.total_bytes == null ? "" : bytes(d.total_bytes)}</span></td><td class="dataset-paths">${paths(d)}</td><td>${badge(d.state)}${d.trimmed ? ' <span class="badge">已裁剪</span>' : ""}${d.reason ? `<span class="sub job-error">${esc(d.reason)}</span>` : ""}</td><td><button class="danger" data-delete-dataset="${esc(d.id)}" data-delete-kind="${d.kind}" ${busy || !d.deletable ? "disabled" : ""}>删除${d.kind === "raw" ? "原始数据" : "数据集"}</button></td></tr>`).join("") : '<tr><td colspan="5" class="empty">请选择机器人类型；可管理的原始数据和 LeRobot 数据集将在此显示。</td></tr>';
   const list = $("dataset-list");
   if (list.dataset.content !== html) {
     const focused = document.activeElement?.dataset.deleteDataset;
@@ -1432,7 +1509,7 @@ $("merge-form").onsubmit = (event) => {
   });
 };
 function renderMergeJobs(jobs) {
-  $("merge-job-list").innerHTML = jobs.length ? jobs.map((j) => `<tr><td><strong class="task-name">${esc(j.dataset_name)}</strong><span class="sub">${esc(j.id.slice(0, 12))} · LeRobot ${esc(j.target_format)}</span></td><td>${j.merge_source_count} 个数据集<span class="sub">${j.source_count} episodes · ${j.frame_count} 帧</span></td><td>${esc(j.stage)}${j.error ? `<span class="sub job-error">${esc(j.error)}</span>` : ""}</td><td>${jobBadge(j)} ${sourceBadge(j)}</td><td><div class="action-row">${j.dataset_available ? `<button class="primary" data-viewer="${esc(j.id)}">预览数据</button><button class="secondary" data-viewer="${esc(j.id)}" data-viewer-mode="batch">批量预览</button><button class="secondary" data-detail="${esc(j.id)}">查看结果</button>` : ["FAILED", "INTERRUPTED"].includes(j.state) ? `<button class="secondary" data-merge-retry="${esc(j.id)}">重新选择 / 重试</button><button class="secondary" data-detail="${esc(j.id)}">查看详情</button>` : '<span class="small muted">后台处理中</span>'}</div></td></tr>`).join("") : '<tr><td colspan="5" class="empty">该机器人类型暂无合并任务。提交后可在此查看进度和结果。</td></tr>';
+  $("merge-job-list").innerHTML = jobs.length ? jobs.map((j) => `<tr><td><strong class="task-name">${esc(j.dataset_name)}</strong><span class="sub">${esc(j.id.slice(0, 12))} · LeRobot ${esc(j.target_format)}</span></td><td>${j.merge_source_count} 个数据集<span class="sub">${j.source_count} episodes · ${j.frame_count} 帧</span></td><td>${esc(j.stage)}${j.error ? `<span class="sub job-error">${esc(j.error)}</span>` : ""}</td><td>${jobBadge(j)} ${sourceBadge(j)} ${trimmedBadge(j)}</td><td><div class="action-row">${j.dataset_available ? `<button class="primary" data-viewer="${esc(j.id)}">预览数据</button><button class="secondary" data-viewer="${esc(j.id)}" data-viewer-mode="batch">批量预览</button><button class="secondary" data-detail="${esc(j.id)}">查看结果</button>` : ["FAILED", "INTERRUPTED"].includes(j.state) ? `<button class="secondary" data-merge-retry="${esc(j.id)}">重新选择 / 重试</button><button class="secondary" data-detail="${esc(j.id)}">查看详情</button>` : '<span class="small muted">后台处理中</span>'}</div></td></tr>`).join("") : '<tr><td colspan="5" class="empty">该机器人类型暂无合并任务。提交后可在此查看进度和结果。</td></tr>';
 }
 $("merge-job-list").addEventListener("click", (event) => {
   const id = event.target.closest("[data-merge-retry]")?.dataset.mergeRetry;
@@ -1496,8 +1573,9 @@ async function showJob() {
     ${renderEpisodeSelection(j)}
     ${j.operation === "version_conversion" ? `<p class="small">来源：<strong>${esc(j.source_dataset_name)}</strong>（任务 ${esc(j.source_job_id.slice(0, 12))}） · LeRobot ${esc(j.source_format)} → ${esc(j.target_format)}</p>` : ""}
     ${j.operation === "stationary_trim" ? `<p class="small">首尾静止帧裁剪：来源 <strong>${esc(j.source_dataset_name)}</strong>（任务 ${esc(String(j.source_job_id || "").slice(0, 12))}） · LeRobot ${esc(j.source_format)} · 删除 ${esc(j.trim_summary?.frames_removed ?? "?")} / ${esc(j.trim_summary?.frames ?? "?")} 帧 · 保留 ${esc(j.episode_count)} 个 episodes</p>` : ""}
+    ${j.operation === "manual_trim" ? `<p class="small">手动裁剪：来源 <strong>${esc(j.source_dataset_name)}</strong>（任务 ${esc(String(j.source_job_id || "").slice(0, 12))}） · LeRobot ${esc(j.source_format)} · Episode ${esc(j.manual_episode ?? "?")} · 删除 ${esc(j.manual_summary?.frames_removed ?? j.manual_removed_frames ?? "?")} / ${esc(j.manual_summary?.frames ?? "?")} 帧 · 保留片段前后直接相连 · 保留 ${esc(j.episode_count)} 个 episodes</p>` : ""}
     ${j.trim_summary && j.operation !== "stationary_trim" ? `<p class="small">转换时首尾静止帧裁剪：删除 ${esc(j.trim_summary.frames_removed ?? "?")} / ${esc(j.trim_summary.frames ?? "?")} 帧（约 ${esc(j.trim_summary.duration_removed_seconds ?? "?")} 秒） · 保留 ${esc(j.episode_count)} 个 episodes</p>` : ""}
-    ${j.trim_static_intervals ? `<p class="small">转换时全程静止区间裁剪：删除 ${esc(j.interval_summary?.frames_removed ?? "?")} / ${esc(j.interval_summary?.frames ?? "?")} 帧（约 ${esc(j.interval_summary?.duration_removed_seconds ?? "?")} 秒） · ${esc(j.interval_summary?.source_episodes ?? "?")} 个来源 episodes → ${esc(j.interval_summary?.output_episodes ?? j.episode_count ?? "?")} 个输出 episodes${j.interval_summary?.episodes_static ? ` · ${esc(j.interval_summary.episodes_static)} 个整段静止保留并标记` : ""}</p>` : ""}
+    ${j.trim_static_intervals ? `<p class="small">转换时静止帧裁剪：删除 ${esc(j.interval_summary?.frames_removed ?? "?")} / ${esc(j.interval_summary?.frames ?? "?")} 帧（约 ${esc(j.interval_summary?.duration_removed_seconds ?? "?")} 秒） · 静止帧立即删除且不保留边界余量 · 保留片段前后直接相连${j.interval_summary?.episodes_joined ? ` · ${esc(j.interval_summary.episodes_joined)} 个 Episode 内做过拼接` : ""}${j.interval_summary?.episodes_static ? ` · ${esc(j.interval_summary.episodes_static)} 个整段静止保留并标记` : ""}</p>` : ""}
     ${jobBadge(j)} ${sourceBadge(j)} <span class="small muted">${esc(jobStageText(j))}</span>
     ${j.error && !j.blockers?.length ? `<p class="job-error">${esc(j.error)}</p>` : ""}
     ${j.state === "BLOCKED" ? `<div class="warning preflight-detail"><strong>转换尚未启动：此任务使用的机器人配置尚未完成核实</strong><ul>${(j.blockers || []).map((b) => `<li><code>${esc(b.field)}</code>：${esc(b.message)}</li>`).join("")}</ul><p>请核实关节顺序、单位、动作来源和时钟，更新服务器 Profile 后重新提交转换。旧任务保留提交时的配置与阻断记录。</p></div>` : ""}
@@ -1505,7 +1583,7 @@ async function showJob() {
     ${j.dataset_available ? "" : `<p class="small muted">${esc(j.dataset_unavailable_reason)}</p>`}
     ${j.work_path ? `<p class="path-hint">任务工作目录：${esc(j.work_path)}</p>` : ""}
     ${j.operation === "merge" ? `<h3 class="section-label">合并来源（拼接顺序）</h3><ol>${(j.merge_sources || []).map((s) => `<li>${esc(s.dataset_name)} · ${s.episode_count} episodes · ${s.frame_count} 帧</li>`).join("")}</ol>` : ""}
-    <div class="action-row">${j.dataset_available ? `<button class="primary" data-viewer="${esc(j.id)}">打开数据预览</button><button class="secondary" data-doctor="${esc(j.id)}">运行 / 重新运行质检</button>` : ""}<button class="secondary" data-report-page="${esc(j.id)}">打开独立报告页</button>${j.operation === "merge" ? '<button class="secondary" data-log="merge">合并日志</button>' : j.operation === "version_conversion" ? '<button class="secondary" data-log="environment">环境日志</button><button class="secondary" data-log="source-validate">来源验证日志</button><button class="secondary" data-log="convert">版本转换日志</button><button class="secondary" data-log="validate">结果验证日志</button><button class="secondary" data-log="doctor">自动质检日志</button>' : j.operation === "stationary_trim" ? '<button class="secondary" data-log="trim">裁剪日志</button><button class="secondary" data-log="validate">结果验证日志</button><button class="secondary" data-log="doctor">自动质检日志</button>' : `<button class="secondary" data-log="convert">转换日志</button>${j.trim_idle_frames ? '<button class="secondary" data-log="trim-detect">裁剪检测日志</button><button class="secondary" data-log="trim">裁剪日志</button>' : ""}${j.trim_static_intervals ? '<button class="secondary" data-log="trim-detect">静止区间检测日志</button><button class="secondary" data-log="trim">静止区间裁剪日志</button>' : ""}<button class="secondary" data-log="validate">验证日志</button><button class="secondary" data-log="doctor">自动质检日志</button>`}</div>
+    <div class="action-row">${j.dataset_available ? `<button class="primary" data-viewer="${esc(j.id)}">打开数据预览</button><button class="secondary" data-doctor="${esc(j.id)}">运行 / 重新运行质检</button>` : ""}<button class="secondary" data-report-page="${esc(j.id)}">打开独立报告页</button>${j.operation === "merge" ? '<button class="secondary" data-log="merge">合并日志</button>' : j.operation === "version_conversion" ? '<button class="secondary" data-log="environment">环境日志</button><button class="secondary" data-log="source-validate">来源验证日志</button><button class="secondary" data-log="convert">版本转换日志</button><button class="secondary" data-log="validate">结果验证日志</button><button class="secondary" data-log="doctor">自动质检日志</button>' : j.operation === "stationary_trim" ? '<button class="secondary" data-log="trim">裁剪日志</button><button class="secondary" data-log="validate">结果验证日志</button><button class="secondary" data-log="doctor">自动质检日志</button>' : `<button class="secondary" data-log="convert">转换日志</button>${j.trim_idle_frames ? '<button class="secondary" data-log="trim-detect">裁剪检测日志</button><button class="secondary" data-log="trim">裁剪日志</button>' : ""}${j.trim_static_intervals ? '<button class="secondary" data-log="trim-detect">静止帧检测日志</button><button class="secondary" data-log="trim">静止帧裁剪日志</button>' : ""}<button class="secondary" data-log="validate">验证日志</button><button class="secondary" data-log="doctor">自动质检日志</button>`}</div>
     <h3 class="section-label">LeRobot Doctor 质量报告</h3>
     <p class="small muted">Doctor 报告只用于展示数据质量，不会修改或删除已转换的数据集。模拟数据始终保留模拟标识。</p>
     <div class="action-row"><button class="secondary" data-report="automatic">转换时的报告</button>${checks.map((c) => `<button class="secondary" data-report="${esc(c.id)}">${esc(new Date(c.created_at * 1000).toLocaleTimeString("zh-CN"))} · ${esc(names[c.state] || c.state)}${c.severity ? " · " + esc(c.severity) : ""}</button>`).join("")}</div>
@@ -1536,7 +1614,18 @@ function renderViewerStatus(v) {
 }
 async function poll() {
   if (!config) return;
+  // A hidden tab does no useful rendering; skip the network work and resume
+  // immediately when the user returns to it.
+  if (document.hidden) {
+    timer = setTimeout(poll, 5000);
+    return;
+  }
   await refresh();
   if (config) timer = setTimeout(poll, 2000);
 }
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !config) return;
+  clearTimeout(timer);
+  void poll();
+});
 boot();

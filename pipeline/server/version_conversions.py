@@ -97,6 +97,10 @@ class VersionConversionRunner:
         for job in self.store.all("job"):
             if job["state"] not in DATA_READY_STATES and not job.get("dataset_ready"):
                 continue
+            # An in-place trim shares the source path and is tracked on the
+            # source job, so selecting it would duplicate the same dataset.
+            if job.get("operation") == "manual_trim" and job.get("in_place") is True:
+                continue
             row = {
                 "id": job["id"],
                 "source_job_id": job["id"],

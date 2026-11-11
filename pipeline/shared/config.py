@@ -22,6 +22,20 @@ def _price_rate(model, value):
     return rate
 
 
+def _env_boolean(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment switch without accepting ambiguous values."""
+
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(f"{name} 必须是布尔值（true/false）")
+
+
 def validate_argus_prices(prices) -> dict:
     """Validate the declared model rates once, at configuration load.
 
@@ -101,6 +115,9 @@ class Settings:
     auto_process: bool = False
     poll_seconds: float = 2.0
     cookie_secure: bool = False
+    # Deployment setting: when the Server is only reachable on a trusted
+    # network such as Tailscale, the browser login can be disabled entirely.
+    trusted_network: bool = False
     viewer_origin: str = "http://127.0.0.1:8082"
     viewer_ui_port: int = 3100
     viewer_data_port: int = 8765
@@ -112,6 +129,8 @@ class Settings:
     argus_model: str = "openai/gpt-6-astra"
     argus_api_key_env: str = "PIPELINE_ARGUS_API_KEY"
     argus_auto_label: bool = False
+    # Annotation only; analysis retains its independently configured budgets.
+    argus_annotation_unlimited: bool = False
     argus_task_budget_usd: float = 20.0
     argus_daily_budget_usd: float = 100.0
     argus_per_episode_budget_usd: float = 1.0
@@ -133,6 +152,9 @@ class Settings:
     argus_annotation_field_dictionary: bool = False
     argus_annotation_note: str = ""
     slurm: dict = field(default_factory=dict)
+    # Trusted deployment setting, not a user-supplied conversion option.
+    conversion_image_storage: str = "materialized"
+    conversion_prepare_in_allocation: bool = False
     devices: list[dict] = field(default_factory=list)
     accepted_capture_profile_hashes: list[str] = field(default_factory=list)
     replay: dict = field(default_factory=dict)
@@ -141,6 +163,19 @@ class Settings:
         # A price table is written by hand in server.json. Validate it once,
         # where the fix is obvious, rather than when a paid run is refused.
         self.argus_prices = validate_argus_prices(self.argus_prices)
+        if type(self.argus_annotation_unlimited) is not bool:
+            raise ValueError("argus_annotation_unlimited 必须是布尔值")
+        if self.conversion_image_storage not in {"materialized", "reference"}:
+            raise ValueError(
+                "conversion_image_storage 必须是 materialized 或 reference"
+            )
+        if type(self.conversion_prepare_in_allocation) is not bool:
+            raise ValueError("conversion_prepare_in_allocation 必须是布尔值")
+        if type(self.trusted_network) is not bool:
+            raise ValueError("trusted_network 必须是布尔值")
+        from .execution_budget import ExecutionBudget
+
+        ExecutionBudget.resolve(self.slurm)
 
     @classmethod
     def load(cls, role: str, path: str | None = None):
@@ -161,8 +196,11 @@ class Settings:
             ("bridge_token", "PIPELINE_BRIDGE_TOKEN"),
         ]:
             raw[key] = os.environ.get(env, raw.get(key, ""))
+        raw["trusted_network"] = _env_boolean(
+            "PIPELINE_TRUSTED_NETWORK", raw.get("trusted_network", False)
+        )
         settings = cls(**raw)
-        if len(settings.token) < 24:
+        if not settings.trusted_network and len(settings.token) < 24:
             raise ValueError("PIPELINE_TOKEN 必须设置为至少 24 字符的随机密钥")
         if (role == "client" or (role == "server" and not settings.devices)) and len(
             settings.device_token
@@ -170,7 +208,7 @@ class Settings:
             raise ValueError(
                 "PIPELINE_DEVICE_TOKEN 必须设置为至少 24 字符的独立设备密钥"
             )
-        if settings.token == settings.device_token:
+        if settings.token and settings.token == settings.device_token:
             raise ValueError("用户密钥与设备密钥必须不同")
         if settings.mode not in {"mock", "ros2"} or settings.processing_mode not in {
             "demo",
@@ -189,8 +227,7 @@ class Settings:
         if not 65536 <= settings.chunk_bytes <= 16 * 1024**2:
             raise ValueError("chunk_bytes 应在 64 KiB 到 16 MiB 之间")
         if not isinstance(settings.argus_models, list) or not all(
-            isinstance(value, str) and value.strip()
-            for value in settings.argus_models
+            isinstance(value, str) and value.strip() for value in settings.argus_models
         ):
             raise ValueError("argus_models 必须是模型标识符列表")
         settings.argus_prices = validate_argus_prices(settings.argus_prices)

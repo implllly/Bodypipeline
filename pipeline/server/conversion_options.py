@@ -9,7 +9,7 @@ from pipeline.shared.core import DomainError
 
 class GripperClosureOptions(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-    minimum_percent: float = Field(strict=True, ge=0, le=100)
+    increase_percent: float = Field(strict=True, ge=0, le=100)
 
 
 class ConversionOptions(BaseModel):

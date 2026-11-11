@@ -223,10 +223,7 @@ def normalize_api_key(value) -> str:
     if len(text) > MAX_API_KEY:
         raise DomainError("模型 API Key 过长", 400)
     if any(
-        char.isspace()
-        or not char.isascii()
-        or ord(char) < 32
-        or ord(char) == 127
+        char.isspace() or not char.isascii() or ord(char) < 32 or ord(char) == 127
         for char in text
     ):
         raise DomainError("模型 API Key 不能包含空白、控制字符或非 ASCII 字符", 400)
@@ -326,9 +323,7 @@ def list_models(settings, base_url=None, api_key=None) -> dict:
         endpoint + "/models", headers=headers, method="GET"
     )
     try:
-        with urllib.request.urlopen(
-            request, timeout=MODEL_LIST_TIMEOUT
-        ) as response:
+        with urllib.request.urlopen(request, timeout=MODEL_LIST_TIMEOUT) as response:
             raw = response.read(MAX_MODELS_BYTES + 1)
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -338,9 +333,7 @@ def list_models(settings, base_url=None, api_key=None) -> dict:
             pass
         detail = redact(detail, key)[:400]
         suffix = f" · {detail}" if detail else ""
-        raise DomainError(
-            f"模型列表获取失败：HTTP {exc.code}{suffix}", 502
-        ) from exc
+        raise DomainError(f"模型列表获取失败：HTTP {exc.code}{suffix}", 502) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
         message = redact(str(reason), key)[:500]
@@ -433,11 +426,15 @@ def command(settings, annotation: dict, data: Path, work: Path) -> list[str]:
         str(work / "argus"),
         "--dataset",
         str(annotation.get("dataset_name") or annotation.get("job_id") or "dataset"),
-        "--cap",
-        f"{float(annotation.get('cap_usd') or 0.0):.4f}",
         "--concurrency",
         str(max(1, int(annotation.get("concurrency") or 8))),
     ]
+    cap_args = (
+        ["--no-cap"]
+        if annotation.get("cap_usd") is None
+        else ["--cap", f"{float(annotation['cap_usd']):.4f}"]
+    )
+    args[args.index("--concurrency") : args.index("--concurrency")] = cap_args
     note = str(annotation.get("note") or "").strip()
     if note:
         args += ["--dataset-note", note]
@@ -474,8 +471,12 @@ def stage_from_log(text: str, current: str = "") -> str:
     stage = current
     for match in _MARKER.finditer(text):
         marker = match.group(1)
-        key = marker if marker in STAGE_TITLES else next(
-            (prefix for prefix in STAGE_ORDER if marker.startswith(prefix)), ""
+        key = (
+            marker
+            if marker in STAGE_TITLES
+            else next(
+                (prefix for prefix in STAGE_ORDER if marker.startswith(prefix)), ""
+            )
         )
         if key:
             stage = STAGE_TITLES[key]
@@ -638,7 +639,9 @@ def _label_failure(data: dict) -> dict | None:
     if data.get("parse_ok") is False:
         return {
             "status": "failed",
-            "why": data.get("no_reply") or data.get("unreadable") or "模型未返回可用标注",
+            "why": data.get("no_reply")
+            or data.get("unreadable")
+            or "模型未返回可用标注",
         }
     return None
 
@@ -742,11 +745,13 @@ def _clip_rows(clips: Path, episode_id: str) -> list[tuple[str, Path]]:
         seen.add(camera)
         rows.append((camera, path))
     order = {"exo": 0, "left": 1, "right": 2}
-    rows.sort(key=lambda row: (
-        row[0].startswith("depth_"),
-        order.get(row[0], len(order)),
-        row[0],
-    ))
+    rows.sort(
+        key=lambda row: (
+            row[0].startswith("depth_"),
+            order.get(row[0], len(order)),
+            row[0],
+        )
+    )
     return rows
 
 
@@ -761,9 +766,7 @@ def clips(work: Path, episode_id: str) -> list[dict]:
             size = path.stat().st_size
         except OSError:
             continue
-        rows.append(
-            {"camera": camera, "label": _clip_label(camera), "size": size}
-        )
+        rows.append({"camera": camera, "label": _clip_label(camera), "size": size})
     return rows
 
 
@@ -844,9 +847,7 @@ def log_names(work: Path) -> list[str]:
     names = ["run"]
     logs = Path(work) / "argus/logs"
     if logs.is_dir():
-        names.extend(
-            sorted(path.stem for path in logs.glob("*.log") if path.is_file())
-        )
+        names.extend(sorted(path.stem for path in logs.glob("*.log") if path.is_file()))
     return names
 
 

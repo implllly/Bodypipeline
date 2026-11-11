@@ -69,9 +69,9 @@
   ],
   "conversion": {
     "gripper_closure": {
-      "algorithm": "closing_hold_plateaus_v1",
+      "algorithm": "closing_hold_plateaus_v4",
       "calibration_id": "arx_x5_nominal_motor_travel_v1",
-      "default_percent": 90,
+      "default_increase_percent": 10,
       "channels": [
         {
           "joint": "left_gripper",

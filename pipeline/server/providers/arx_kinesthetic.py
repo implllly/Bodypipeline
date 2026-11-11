@@ -325,6 +325,8 @@ class ARXKinestheticProvider(AlohaHDF5Provider):
                 report["action"],
                 profile,
                 options["gripper_closure"],
+                # DAgger action[t] is the measured position at t + 1.
+                action_state_offset=1,
             )
         fps = profile["output_fps"]
         frames = int(math.floor(report["times"][-1] * fps + 1e-7)) + 1

@@ -284,9 +284,9 @@
                   <div id="conversion-closure" hidden>
                     <label class="check-label" for="conversion-closure-enabled"><input id="conversion-closure-enabled" type="checkbox" />启用夹爪闭合度修正</label>
                     <div id="conversion-closure-fields" class="field-block" hidden>
-                      <label for="conversion-closure-percent">夹持阶段最小闭合度（名义行程 %）</label>
-                      <input id="conversion-closure-percent" type="number" min="0" max="100" step="0.1" value="90" disabled />
-                      <p class="small muted">仅提高识别出的稳定夹持阶段的夹爪动作目标，保留已经更闭合的动作。百分比表示配置中的电机名义行程，不代表夹持力。</p>
+                      <label for="conversion-closure-percent">夹持阶段闭合度增加（名义行程，百分点）</label>
+                      <input id="conversion-closure-percent" type="number" min="0" max="100" step="0.1" value="10" disabled />
+                      <p class="small muted">将识别出的稳定夹持阶段整段向闭合方向平移指定百分点，保留原有曲线形状和波动；接近全闭时按区间峰值自动缩小整段增量。百分比表示配置中的电机名义行程，不代表夹持力。</p>
                     </div>
                   </div>
                   <label for="conversion-invalid-policy">不合格采集处理</label>
@@ -299,8 +299,8 @@
                   <p class="small muted">自动质检仅生成质量报告，不改变转换结果。取消勾选时仅转换与结构验证，之后仍可直接预览或单独质检。</p>
                   <label class="check-label" for="conversion-trim"><input id="conversion-trim" type="checkbox" />转换时自动删除首尾静止帧</label>
                   <p class="small muted">检测每个 Episode 起点与终点的静止画面并同步裁剪所有相机视频；阈值来自机器人 Profile，整段静止的 Episode 始终保留。演示模式不可用。</p>
-                  <label class="check-label" for="conversion-static"><input id="conversion-static" type="checkbox" />转换时自动删除全程静止区间</label>
-                  <p class="small muted">检测录制中任何位置的持续静止区间（含中间停顿），同步裁剪所有相机视频，并把保留的连续片段拆成多个 Episode。识别的是静止区间，不代表一定是推理等待；阈值与最短时长来自机器人 Profile，整段静止的 Episode 保留并标记。与首尾裁剪不能同时开启，演示模式不可用。</p>
+                  <label class="check-label" for="conversion-static"><input id="conversion-static" type="checkbox" />转换时自动删除全程静止帧</label>
+                  <p class="small muted">逐帧检测录制中任何位置的静止画面（开头、中间停顿和结尾），同步裁剪所有相机视频，删除后把保留片段前后直接相连，仍是一个 Episode。静止帧立即删除，不要求持续达到最短时长，也不保留动作边界余量；识别结果不代表一定是推理等待。阈值来自机器人 Profile，整段静止的 Episode 保留并标记。与首尾裁剪不能同时开启，演示模式不可用。</p>
                   <div id="conversion-warning" class="warning" hidden></div>
                   <div class="conversion-submit"><button id="conversion-submit" class="primary" type="submit" disabled>提交批量转换</button><span id="conversion-help" class="small muted">请选择数据集并填写 instruction。</span></div>
                 </form>

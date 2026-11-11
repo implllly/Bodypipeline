@@ -294,49 +294,44 @@ def prepare_agilex_hdf5(raw: Path, dest: Path, profile: dict):
                     compression="gzip",
                     shuffle=True,
                 )
-                images = {
-                    camera_id: output.create_dataset(
-                        f"observation.images.{camera_id}",
-                        shape=(n,),
-                        dtype=h5py.vlen_dtype(np.dtype("uint8")),
-                    )
-                    for camera_id, _, _ in camera_files
-                }
-                for camera_id, width, height in camera_files:
-                    images[camera_id].attrs["width"] = width
-                    images[camera_id].attrs["height"] = height
-                    images[camera_id].attrs["encoded_format"] = "jpeg"
-
+                grid = start + np.arange(n, dtype=np.float64) / fps
                 for label, stream in streams.items():
                     times = stream["times"]
-                    offsets = []
-                    used = set()
-                    previous = None
-                    repeats = 0
+                    if stream["camera"]:
+                        right = np.minimum(np.searchsorted(times, grid), len(times) - 1)
+                        left = np.maximum(right - 1, 0)
+                        indices = np.where(
+                            abs(times[left] - grid) <= abs(times[right] - grid),
+                            left,
+                            right,
+                        )
+                        offsets = abs(times[indices] - grid)
+                        bound = camera_bound
+                    else:
+                        indices = np.searchsorted(times, grid, side="right") - 1
+                        if np.any(indices < 0):
+                            raise EpisodeValidationError("没有因果前置关节样本")
+                        offsets = grid - times[indices]
+                        bound = joint_bound
+                    invalid = np.flatnonzero(offsets > bound)
+                    if len(invalid):
+                        i = int(invalid[0])
+                        raise EpisodeValidationError(
+                            f"时间对齐越界：{label} frame={i} "
+                            f"error={offsets[i] * 1000:.3f}ms limit={bound * 1000:.3f}ms"
+                        )
+                    stream["indices"] = indices
                     shape = None
-                    for i in range(n):
-                        t = start + i / fps
-                        if stream["camera"]:
-                            j = bisect.bisect_left(times, t)
-                            candidates = [
-                                value for value in (j - 1, j) if 0 <= value < len(times)
-                            ]
-                            j = min(candidates, key=lambda value: abs(times[value] - t))
-                            offset = abs(float(times[j]) - t)
-                            bound = camera_bound
-                        else:
-                            j = bisect.bisect_right(times, t) - 1
-                            if j < 0:
-                                raise EpisodeValidationError("没有因果前置关节样本")
-                            offset = t - float(times[j])
-                            bound = joint_bound
-                        if offset > bound:
-                            raise EpisodeValidationError(
-                                f"时间对齐越界：{label} frame={i} "
-                                f"error={offset * 1000:.3f}ms limit={bound * 1000:.3f}ms"
-                            )
-                        if stream["camera"]:
-                            encoded = source[stream["group"]]["jpeg"][j]
+                    if stream["camera"]:
+                        from .providers.hdf5_images import inspect_images, write_images
+
+                        expected_dimensions = next(
+                            (width, height)
+                            for camera_id, width, height in camera_files
+                            if camera_id == stream["index"]
+                        )
+
+                        def inspect(encoded):
                             data = (
                                 encoded.tobytes()
                                 if isinstance(encoded, np.ndarray)
@@ -349,61 +344,63 @@ def prepare_agilex_hdf5(raw: Path, dest: Path, profile: dict):
                                         raise EpisodeValidationError(
                                             f"相机颜色模式不一致：{label}"
                                         )
-                                    shape = image.size
+                                    size = image.size
                             except DomainError:
                                 raise
                             except (OSError, ValueError) as exc:
                                 raise EpisodeValidationError(
                                     f"相机图像损坏：{label}"
                                 ) from exc
-                            images[stream["index"]][i] = np.frombuffer(
-                                data, dtype=np.uint8
-                            )
-                        offsets.append(offset * 1000)
-                        repeats += previous == j
-                        previous = j
-                        used.add(j)
-                    if stream["camera"]:
-                        expected_dimensions = next(
-                            (width, height)
-                            for camera_id, width, height in camera_files
-                            if camera_id == stream["index"]
+                            if size != expected_dimensions:
+                                raise EpisodeValidationError(
+                                    f"相机分辨率与 HDF5 元数据不一致：{label}"
+                                )
+                            return size
+
+                        # Decode every selected frame, reading encoded bytes in
+                        # bounded batches. Never pass an HDF5 handle to threads.
+                        # A repeated output frame refers to identical encoded
+                        # bytes. Check every selected source frame once.
+                        for size in inspect_images(
+                            source[stream["group"]]["jpeg"], inspect, np.unique(indices)
+                        ):
+                            shape = size
+                        dataset = write_images(
+                            output,
+                            f"observation.images.{stream['index']}",
+                            source[stream["group"]]["jpeg"],
+                            indices,
                         )
-                        if shape != expected_dimensions:
-                            raise EpisodeValidationError(
-                                f"相机分辨率与 HDF5 元数据不一致：{label}"
-                            )
-                    offsets.sort()
+                        dataset.attrs.update(
+                            width=shape[0], height=shape[1], encoded_format="jpeg"
+                        )
+                    offsets = np.sort(offsets * 1000)
                     report["streams"][label] = {
                         "input_frames": len(times),
-                        "selected_unique": len(used),
-                        "repeated_frames": repeats,
-                        "max_offset_ms": max(offsets),
-                        "p95_offset_ms": offsets[
-                            min(len(offsets) - 1, int(0.95 * len(offsets)))
-                        ],
+                        "selected_unique": len(np.unique(indices)),
+                        "repeated_frames": int(np.count_nonzero(np.diff(indices) == 0)),
+                        "max_offset_ms": float(offsets[-1]),
+                        "p95_offset_ms": float(
+                            offsets[min(len(offsets) - 1, int(0.95 * len(offsets)))]
+                        ),
                         "dimensions": shape,
                     }
 
                 # Fill each arm independently so left/right joint order is explicit.
                 for role_index, key in enumerate(profile["state_streams"]):
                     values = streams[f"arm/jointState/{key}"]["positions"]
-                    times = streams[f"arm/jointState/{key}"]["times"]
                     begin = role_index * dimensions_per_role
                     end = begin + dimensions_per_role
-                    for i in range(n):
-                        t = start + i / fps
-                        j = bisect.bisect_right(times, t) - 1
-                        state[i, begin:end] = values[j]
+                    state[:, begin:end] = values[
+                        streams[f"arm/jointState/{key}"]["indices"]
+                    ]
                 for role_index, key in enumerate(profile["action_streams"]):
                     values = streams[f"arm/jointState/{key}"]["positions"]
-                    times = streams[f"arm/jointState/{key}"]["times"]
                     begin = role_index * dimensions_per_role
                     end = begin + dimensions_per_role
-                    for i in range(n):
-                        t = start + i / fps
-                        j = bisect.bisect_right(times, t) - 1
-                        action[i, begin:end] = values[j]
+                    action[:, begin:end] = values[
+                        streams[f"arm/jointState/{key}"]["indices"]
+                    ]
 
                 package_metadata = read_package_metadata(raw)
                 output.create_dataset(

@@ -21,7 +21,7 @@ from fastapi.responses import (
     RedirectResponse,
     StreamingResponse,
 )
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from pipeline.shared.core import DomainError, Store, executable_path
 from pipeline.shared.security import install_security
@@ -418,6 +418,17 @@ class DoctorCache:
         return payload
 
 
+class ManualTrimRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    episode_index: StrictInt = Field(ge=0)
+    remove_ranges: list[tuple[StrictInt, StrictInt]] = Field(
+        min_length=1, max_length=100
+    )
+    name: str | None = Field(default=None, min_length=1, max_length=2000)
+    run_doctor: StrictBool = False
+    in_place: StrictBool = True
+
+
 class RecycleSelection(BaseModel):
     episodes: list[StrictInt] = Field(min_length=1, max_length=100000)
     revision: StrictInt = Field(ge=0)
@@ -475,11 +486,11 @@ def create_gateway(settings):
                     timeout=settings.command_timeout,
                 )
         except httpx.HTTPError as exc:
-            raise DomainError("Server 标注服务暂不可用，请稍后重试", 503) from exc
+            raise DomainError("Server 服务暂不可用，请稍后重试", 503) from exc
         try:
             payload = response.json()
         except ValueError as exc:
-            raise DomainError("Server 标注服务返回无效响应", 502) from exc
+            raise DomainError("Server 服务返回无效响应", 502) from exc
         return JSONResponse(payload, status_code=response.status_code, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/task-templates")
@@ -520,6 +531,88 @@ def create_gateway(settings):
         result = await asyncio.to_thread(scores.start, row)
         return JSONResponse(
             result, status_code=202, headers={"Cache-Control": "no-store"}
+        )
+
+    @app.post("/api/manual-trims/{dataset_id}", status_code=202)
+    async def manual_trim_start(dataset_id: str, body: ManualTrimRequest):
+        # The source is always the registered preview's own job, so the viewer
+        # can never trim a dataset the caller does not have a preview for.
+        row = score_preview(dataset_id)
+        return await annotation_proxy(
+            f"/api/jobs/{row['job_id']}/manual-trims", body
+        )
+
+    async def manual_job(dataset_id: str, job_id: str):
+        """Fetch a trim job only when it belongs to this preview's dataset."""
+
+        row = score_preview(dataset_id)
+        if not job_id or any(
+            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for char in job_id
+        ):
+            raise DomainError("裁剪任务编号无效", 404)
+        url = settings.server_url.rstrip("/") + f"/api/jobs/{job_id}"
+        try:
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.get(
+                    url,
+                    headers={"Authorization": "Bearer " + settings.token},
+                    timeout=settings.command_timeout,
+                )
+        except httpx.HTTPError as exc:
+            raise DomainError("Server 裁剪服务暂不可用，请稍后重试", 503) from exc
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise DomainError("Server 裁剪服务返回无效响应", 502) from exc
+        if response.status_code == 200 and (
+            not isinstance(payload, dict)
+            or payload.get("operation") != "manual_trim"
+            or payload.get("source_job_id") != row["job_id"]
+        ):
+            raise DomainError("裁剪任务不存在", 404)
+        return payload, response.status_code
+
+    @app.get("/api/manual-trims/{dataset_id}/jobs/{job_id}")
+    async def manual_trim_status(dataset_id: str, job_id: str):
+        payload, status = await manual_job(dataset_id, job_id)
+        return JSONResponse(
+            payload, status_code=status, headers={"Cache-Control": "no-store"}
+        )
+
+    @app.post("/api/manual-trims/{dataset_id}/jobs/{job_id}/preview")
+    async def manual_trim_preview(dataset_id: str, job_id: str):
+        payload, _status = await manual_job(dataset_id, job_id)
+        if payload.get("state") not in {
+            "COMPLETED",
+            "CONVERTED",
+            "SYNTHETIC_READY",
+            "QUARANTINED",
+        }:
+            raise DomainError("裁剪尚未完成，暂时无法预览", 409)
+        url = settings.server_url.rstrip("/") + f"/api/jobs/{job_id}/viewer"
+        try:
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": "Bearer " + settings.token},
+                    timeout=settings.command_timeout,
+                )
+        except httpx.HTTPError as exc:
+            raise DomainError("Server 预览服务暂不可用，请稍后重试", 503) from exc
+        try:
+            opened = response.json()
+        except ValueError as exc:
+            raise DomainError("Server 预览服务返回无效响应", 502) from exc
+        if response.status_code >= 400:
+            detail = (
+                opened.get("detail")
+                if isinstance(opened, dict)
+                else "无法打开裁剪结果"
+            )
+            raise DomainError(str(detail), response.status_code)
+        return JSONResponse(
+            {"url": opened.get("url")}, headers={"Cache-Control": "no-store"}
         )
 
     @app.get("/api/recycle/{dataset_id}")

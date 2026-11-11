@@ -200,6 +200,10 @@
     }
     const names = Array.from(pricedModels() || []);
     status.hidden = false;
+    if (options?.unlimited) {
+      status.textContent = "该模型没有已知单价，费用统计可能不完整；当前自动标注不限额。";
+      return;
+    }
     status.textContent =
       "该模型没有已知单价，费用上限无法保证；请服务器在 argus_prices 中补充单价，或改用：" +
       (names.join("、") || "已知单价的模型");
@@ -561,6 +565,16 @@
       box.textContent = "正在读取预算…";
       return;
     }
+    if (options.unlimited) {
+      const cap = $("annotation-cap");
+      cap.required = false;
+      cap.disabled = true;
+      cap.value = "";
+      cap.placeholder = "不限额";
+      cap.removeAttribute("max");
+      box.textContent = `自动标注不设单任务、每日或每 Episode 费用上限。今日已结算 ${money(options.used_today_usd)}；实际费用继续统计。`;
+      return;
+    }
     const defaults = options.defaults || {};
     const item = selectedCandidate();
     const count = Math.max(1, Number(item?.episode_count || 1));
@@ -588,7 +602,7 @@
       Boolean(options?.available) &&
       Boolean($("annotation-dataset").value) &&
       Boolean(model) &&
-      modelPriced(model) &&
+      (options?.unlimited || modelPriced(model)) &&
       (!$("annotation-template").value || (options?.template_available && templateLibrary.templates.some((t) => t.id === $("annotation-template").value))) &&
       (!needsKey || Boolean($("annotation-api-key").value.trim())) &&
       !modelFetching &&
@@ -668,7 +682,7 @@
               <td><strong class="task-name">${esc(row.dataset_name)}</strong><span class="sub">${esc(row.id.slice(0, 12))} · ${time(row.created_at)}</span><span class="sub">${esc(row.robot_type || "未知机器人")} · ${esc(row.rig || "")}</span></td>
               <td>${esc(row.model || "—")}<span class="sub">${esc(row.note ? row.note.slice(0, 48) : "无额外说明")}</span></td>
               <td>${esc(progress)}<span class="sub">${esc(row.stage || "")}</span><div class="progress"><span data-annotation-width="${percent}"></span></div></td>
-              <td>${money(row.cost_usd)}<span class="sub">上限 ${money(row.cap_usd)}</span></td>
+              <td>${money(row.cost_usd)}<span class="sub">${row.cap_usd == null ? "不限额" : `上限 ${money(row.cap_usd)}`}</span></td>
               <td>${stateBadge(row.state)}${row.error ? `<span class="sub job-error">${esc(row.error.slice(0, 120))}</span>` : ""}</td>
               <td><div class="action-row">${actions}</div></td>
             </tr>`;
@@ -732,7 +746,7 @@
       <div class="annotation-summary">
         <div><span class="small muted">状态</span><div>${stateBadge(row.state)} ${esc(row.stage || "")}</div></div>
         <div><span class="small muted">进度</span><div>${done} / ${total || "?"} Episodes</div><div class="progress"><span data-annotation-width="${percent}"></span></div></div>
-        <div><span class="small muted">已结算费用</span><div>${money(row.cost_usd)} / 上限 ${money(row.cap_usd)}</div><span class="sub">${row.cost_complete ? "费用完整" : "费用仍在结算或为估算"} · 预留 ${money(row.reserved_cost_usd)}</span></div>
+        <div><span class="small muted">已结算费用</span><div>${money(row.cost_usd)} / ${row.cap_usd == null ? "不限额" : `上限 ${money(row.cap_usd)}`}</div><span class="sub">${row.cost_complete ? "费用完整" : "费用仍在结算或为估算"} · 预留 ${money(row.reserved_cost_usd)}</span></div>
         <div><span class="small muted">Episode 失败</span><div>${row.episodes_failed || 0}</div><span class="sub">退出码 ${esc(row.exit_code ?? "—")}</span></div>
       </div>
       <div class="annotation-meta small muted">
@@ -1318,7 +1332,7 @@
       template_id: $("annotation-template").value || null,
       template_revision: $("annotation-template").value ? templateLibrary.revision : null,
       model: $("annotation-model").value,
-      cap_usd: Number($("annotation-cap").value),
+      cap_usd: options?.unlimited ? null : Number($("annotation-cap").value),
       concurrency: Number($("annotation-concurrency").value),
       reasoning: $("annotation-reasoning").value || null,
       inspection: $("annotation-inspection").value,
@@ -1338,7 +1352,7 @@
       $("annotation-api-key").value = "";
       updateModelControls();
       selectedId = row.id;
-      ui.notice(`已提交「${row.dataset_name}」自动标注：${row.model}，费用上限 ${money(row.cap_usd)}。`);
+      ui.notice(`已提交「${row.dataset_name}」自动标注：${row.model}，${row.cap_usd == null ? "费用不限额" : `费用上限 ${money(row.cap_usd)}`}。`);
       await refresh();
       selectAnnotation(row.id);
     } catch (error) {

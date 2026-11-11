@@ -41,10 +41,8 @@ def admin(settings):
 def policy(**overrides):
     base = {
         "feature": "observation.state",
-        "min_static_seconds": 1.0,
         "min_motion_seconds": 0.2,
         "jitter_amplitude_seconds": 0.2,
-        "padding_seconds": 0.0,
         "min_output_seconds": 0.0,
     }
     base.update(overrides)
@@ -62,16 +60,18 @@ def moving(state, count, delta=0.5):
 def test_normalize_policy_defaults_and_rejects_invalid_values():
     value = normalize_policy({})
     assert value["feature"] == "observation.state"
-    assert value["min_static_seconds"] == 2.0
     assert value["min_motion_seconds"] == 0.2
-    assert value["padding_seconds"] == 0.2
     assert value["min_output_seconds"] == 1.0
+    assert "min_static_seconds" not in value
+    assert "padding_seconds" not in value
     with pytest.raises(DomainError, match="未知字段"):
         normalize_policy({"min_static_second": 1})
     with pytest.raises(DomainError, match="必须在"):
-        normalize_policy({"min_static_seconds": -1})
-    with pytest.raises(DomainError, match="秒数"):
-        normalize_policy({"min_static_seconds": "1"})
+        normalize_policy({"min_motion_seconds": -1})
+    with pytest.raises(DomainError, match="未知字段"):
+        normalize_policy({"min_static_seconds": 1})
+    with pytest.raises(DomainError, match="未知字段"):
+        normalize_policy({"padding_seconds": 0.2})
     with pytest.raises(DomainError, match="正数"):
         normalize_policy({"default_threshold": 0})
 
@@ -85,8 +85,8 @@ def test_provider_interval_policy_inherits_the_trim_signal():
                 "min_idle_seconds": 9,
             },
             "static_intervals": {
-                "min_static_seconds": 3,
-                "padding_seconds": 0.1,
+                "min_motion_seconds": 0.3,
+                "min_output_seconds": 2,
                 "unknown": 1,
             },
         }
@@ -94,8 +94,10 @@ def test_provider_interval_policy_inherits_the_trim_signal():
     assert policy["feature"] == "action"
     assert policy["unit_thresholds"] == {"rad": 0.05}
     assert "min_idle_seconds" not in policy
-    assert policy["min_static_seconds"] == 3
-    assert policy["padding_seconds"] == 0.1
+    assert policy["min_motion_seconds"] == 0.3
+    assert policy["min_output_seconds"] == 2
+    assert "min_static_seconds" not in policy
+    assert "padding_seconds" not in policy
     assert "unknown" not in policy
     assert configured_interval_policy({"trim": "invalid"}) == {}
     tianji = TianjiProvider().stationary_interval_policy(
@@ -110,6 +112,32 @@ def test_provider_interval_policy_inherits_the_trim_signal():
     assert tianji["unit_thresholds"] == {"rad": 0.01, "normalized": 0.2}
 
 
+def test_rad_units_need_unit_thresholds_not_default_threshold():
+    # A built-in per-unit threshold (rad -> 0.02) wins over default_threshold,
+    # so a Profile that only raises default_threshold keeps the old sensitivity
+    # on rad joints. The unit itself has to be overridden.
+    ignored = resolve_policy(normalize_policy({"default_threshold": 0.1}), FEATURES, FPS)
+    assert ignored["thresholds"] == [0.02, 0.02]
+    explicit = resolve_policy(
+        normalize_policy(
+            {"default_threshold": 0.1, "unit_thresholds": {"rad": 0.1}}
+        ),
+        FEATURES,
+        FPS,
+    )
+    assert explicit["thresholds"] == [0.1, 0.1]
+
+
+def test_arx_profile_overrides_the_rad_threshold():
+    profile = json.loads(Path("configs/arx-x5-direct-teaching-v1.json").read_text())
+    resolved = resolve_policy(
+        normalize_policy(configured_interval_policy(profile)), FEATURES, FPS
+    )
+    assert resolved["thresholds"] == [0.1, 0.1]
+    assert "min_static_seconds" not in resolved
+    assert "padding_seconds" not in resolved
+
+
 def test_detect_episode_removes_head_middle_and_tail_static_spans():
     values = []
     values += [[0.0, 0.0]] * 12
@@ -118,25 +146,39 @@ def test_detect_episode_removes_head_middle_and_tail_static_spans():
     values += moving([5.0, 5.0], 10)
     values += [[10.0, 10.0]] * 10
     result = detect_episode(values, policy())
-    assert result["status"] == "split"
+    assert result["status"] == "trimmed"
     assert result["keep_ranges"] == [[12, 22], [32, 42]]
     assert result["removed_ranges"] == [[0, 12], [22, 32], [42, 52]]
     assert result["keep_frames"] == 20
     assert result["removed_frames"] == 32
-    assert result["output_episodes"] == 2
+    assert result["output_episodes"] == 1
 
 
-def test_padding_keeps_context_around_removed_static_spans():
+def test_single_static_frames_are_removed_without_a_minimum_duration():
+    # Two moving runs are separated by one unchanged frame. The first frame is
+    # also static because there is no predecessor. Both must be removed even
+    # though the static spans are only one frame long.
+    values = moving([0.0, 0.0], 12)
+    values += [[6.0, 6.0]]
+    values += moving([6.0, 6.0], 12)
+    result = detect_episode(values, policy())
+    assert result["static_ranges"] == [[0, 1], [12, 13]]
+    assert result["removed_ranges"] == [[0, 1], [12, 13]]
+    assert result["keep_ranges"] == [[1, 12], [13, 25]]
+    assert result["removed_frames"] == 2
+    assert result["output_episodes"] == 1
+
+
+def test_static_spans_are_removed_without_boundary_context():
     values = []
     values += [[0.0, 0.0]] * 12
     values += moving([0.0, 0.0], 10)
     values += [[5.0, 5.0]] * 10
     values += moving([5.0, 5.0], 10)
     values += [[10.0, 10.0]] * 10
-    result = detect_episode(values, policy(padding_seconds=0.1))
-    assert [22, 32] not in result["removed_ranges"]
-    assert result["removed_ranges"] == [[0, 11], [23, 31], [43, 52]]
-    assert result["removed_frames"] == 28
+    result = detect_episode(values, policy())
+    assert result["removed_ranges"] == [[0, 12], [22, 32], [42, 52]]
+    assert result["removed_frames"] == 32
 
 
 def test_detect_episode_ignores_small_jitter_but_splits_on_real_motion():
@@ -161,16 +203,50 @@ def test_detect_episode_keeps_and_marks_a_fully_static_episode():
     assert "保留" in result["reason"]
 
 
-def test_short_output_span_cancels_a_neighbouring_removal():
+def test_short_action_between_static_spans_is_dropped_with_the_static_spans():
     values = [[0.0, 0.0]] * 10
     values += moving([0.0, 0.0], 2)
     values += [[1.0, 1.0]] * 10
     values += moving([1.0, 1.0], 5)
     values += [[3.5, 3.5]] * 10
     result = detect_episode(values, policy(min_output_seconds=0.5))
-    assert len(result["removed_ranges"]) == 2
-    assert result["keep_ranges"][0] == [0, 12]
-    assert result["status"] == "split"
+    assert result["removed_ranges"] == [[0, 22], [27, 37]]
+    assert result["keep_ranges"] == [[22, 27]]
+    assert result["removed_frames"] == 32
+    assert result["status"] == "trimmed"
+
+
+def test_static_spans_at_start_and_end_are_removed_with_short_motion_stubs():
+    # Five motion frames, a long static wait, a real action, another wait and a
+    # short trailing motion stub: both waits must be removed even though the
+    # stubs left at the recording boundaries are shorter than min_output_seconds.
+    values = moving([0.0, 0.0], 5)
+    values += [[2.5, 2.5]] * 100
+    values += moving([2.5, 2.5], 120)
+    values += [[62.5, 62.5]] * 100
+    values += moving([62.5, 62.5], 6)
+    assert len(values) == 331
+    result = detect_episode(values, policy(min_output_seconds=1.0))
+    assert result["static_ranges"] == [[0, 1], [5, 105], [225, 325]]
+    assert result["removed_ranges"] == [[0, 105], [225, 331]]
+    assert result["keep_ranges"] == [[105, 225]]
+    assert result["removed_frames"] == 211
+    assert result["output_episodes"] == 1
+    assert result["status"] == "trimmed"
+
+
+def test_all_static_is_kept_when_every_motion_span_is_below_min_output():
+    values = [[0.0, 0.0]] * 10
+    values += [[0.5, 0.5], [1.0, 1.0]]
+    values += [[1.0, 1.0]] * 10
+    values += [[1.5, 1.5], [2.0, 2.0]]
+    values += [[2.0, 2.0]] * 10
+    result = detect_episode(values, policy(min_output_seconds=0.5))
+    # The last remaining span is never dropped, so the recording cannot vanish
+    # while every static range around it is still removed.
+    assert result["keep_ranges"] == [[22, 24]]
+    assert result["removed_ranges"] == [[0, 22], [24, 34]]
+    assert result["removed_frames"] == 32
 
 
 def test_detection_reports_non_finite_values_and_builds_a_summary():
@@ -225,7 +301,7 @@ def test_conversion_static_intervals_is_boolean_real_mode_and_exclusive(
 
 # ------------------------------------------------------------------- real worker
 @pytest.mark.parametrize("version", ["v2.1", "v3.0"])
-def test_real_static_interval_trim_splits_one_source_episode(
+def test_real_static_interval_trim_joins_kept_ranges_into_one_episode(
     letools_binary, tmp_path, version
 ):
     python = str(Path(letools_binary).with_name("python"))
@@ -246,9 +322,9 @@ def test_real_static_interval_trim_splits_one_source_episode(
         ).stdout
     )
     assert inspected["valid"] is True
-    assert [row["length"] for row in inspected["episodes"]] == [3, 6, 21]
-    assert [row["episode_index"][0] for row in inspected["episodes"]] == [0, 1, 2]
-    assert sum(inspected["videos"].values()) == 30
+    assert [row["length"] for row in inspected["episodes"]] == [6, 21]
+    assert [row["episode_index"][0] for row in inspected["episodes"]] == [0, 1]
+    assert sum(inspected["videos"].values()) == 27
     info = json.loads((output / "meta/info.json").read_text())
-    assert info["total_episodes"] == 3
-    assert info["total_frames"] == 30
+    assert info["total_episodes"] == 2
+    assert info["total_frames"] == 27

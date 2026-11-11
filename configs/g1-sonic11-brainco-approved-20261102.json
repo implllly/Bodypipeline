@@ -1,0 +1,27 @@
+{
+  "cameras": [
+    {"height": 480, "id": "egocentric", "mounting": "head", "source_key": "ego_view", "width": 640},
+    {"height": 480, "id": "left_wrist", "mounting": "wrist_left", "source_key": "left_wrist", "width": 640},
+    {"height": 480, "id": "right_wrist", "mounting": "wrist_right", "source_key": "right_wrist", "width": 640}
+  ],
+  "clock_verified": true,
+  "control_mode": "teleoperation",
+  "g1_sonic": {
+    "camera_max_age_ms": 150.0,
+    "camera_time_fallback": "mapped_wall",
+    "hand_type": "brainco",
+    "max_frames": 1000000,
+    "model_layout": "native",
+    "robot_max_age_ms": 100.0,
+    "sonic_version": "1.1"
+  },
+  "id": "g1_sonic11_brainco_v1",
+  "joint_names": ["left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint", "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint", "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint", "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint", "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint", "left_thumb", "left_thumb_aux", "left_index", "left_middle", "left_ring", "left_pinky", "right_thumb", "right_thumb_aux", "right_index", "right_middle", "right_ring", "right_pinky"],
+  "joint_units": ["rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "rad", "normalized", "normalized", "normalized", "normalized", "normalized", "normalized", "normalized", "normalized", "normalized", "normalized", "normalized", "normalized"],
+  "minimum_frames": 2,
+  "notes": "Verified 2026-11-02 for SONIC 1.1 / BrainCo native conversion: state=body_q29+measured_hands12; action=token_state64+last_requested_hands12; action.wbc=last_joint_target29+last_requested_hands12. Hand commands are logged requests before hardware clamping/slew, not measured or applied output. Robot uses local receive monotonic time; three local cameras use host acquisition monotonic time. Receiver-time causal alignment, not hardware synchronization or training acceptance. Legacy mapped_wall fallback remains declared but was not exercised by the two reviewed episodes. See companion approval audit; production conversion has separate event-boundary and dependency blockers.",
+  "output_fps": 30,
+  "robot_type": "g1_brainco",
+  "semantics_approved": true,
+  "version": 1
+}

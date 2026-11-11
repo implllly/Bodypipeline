@@ -32,7 +32,9 @@ def write_hdf5_preset(
             if encoded_format == "jpg":
                 encoded_format = "jpeg"
             if encoded_format not in {"jpeg", "png"}:
-                raise ValueError(f"{key} 的 encoded_format={encoded_format!r} 不受支持")
+                raise ValueError(
+                    f"{key} 的 encoded_format={encoded_format!r} 不受支持"
+                )
             cameras.append(
                 {
                     "source_key": key,

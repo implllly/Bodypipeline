@@ -4,11 +4,11 @@
 </style></head><body><main>
 <header><a id="back" href="./episode_0">← 返回数据预览</a></header>
 <h1>Episode 回收站</h1><div id="dataset" class="muted">正在读取数据集…</div>
-<p class="note">放入回收站的 Episode 可以恢复。永久清理会从 H800 当前转换数据集中删除所选片段的视频与曲线数据，无法恢复；不删除原始采集文件或其他数据集。清理后，剩余 Episode 会从 0 开始重新连续编号。</p>
+<p class="note">放入回收站的 Episode 可以恢复。永久清理会从服务器当前转换数据集中删除所选片段的视频与曲线数据，无法恢复；不删除原始采集文件或其他数据集。清理后，剩余 Episode 会从 0 开始重新连续编号。</p>
 <section class="panel"><div class="toolbar"><strong id="count">正在加载…</strong><button id="restore" disabled>恢复所选</button><button id="purge" class="danger" disabled>永久清理所选</button></div>
 <div id="status" role="status" class="status"></div><div id="progress" class="progress" hidden></div>
 <div id="list"></div></section>
-<dialog id="confirm"><h2>永久清理所选片段？</h2><p>以下 Episode 的视频与曲线数据将从 H800 当前数据集中删除，无法恢复。</p><div id="confirm-selection"></div><p class="muted">其他 Episode 会保留，并重新连续编号。请确认选择无误。</p><div class="toolbar"><button id="cancel">取消</button><button id="confirm-purge" class="danger">确认永久清理</button></div></dialog>
+<dialog id="confirm"><h2>永久清理所选片段？</h2><p>以下 Episode 的视频与曲线数据将从服务器当前数据集中删除，无法恢复。</p><div id="confirm-selection"></div><p class="muted">其他 Episode 会保留，并重新连续编号。请确认选择无误。</p><div class="toolbar"><button id="cancel">取消</button><button id="confirm-purge" class="danger">确认永久清理</button></div></dialog>
 </main><script>
 (() => {
  const id = location.pathname.split('/')[2], api = '/api/recycle/' + encodeURIComponent(id);
@@ -40,7 +40,7 @@
    if(state.total_episodes===0){$('back').href='http://'+location.hostname+':8081/';$('back').textContent='← 返回管理台（数据集已清空）';}
    const op=state.operation;
    if(['pending','running'].includes(op?.state)) message(op.progress || '正在清理，请稍候…');
-   else if(op?.state==='completed' && !busy) message(`清理完成，已从 H800 删除 ${op.episodes.length} 个 Episode、${op.deleted_frames} 帧。剩余 ${op.remaining_episodes} 个 Episode，编号已更新。`);
+    else if(op?.state==='completed' && !busy) message(`清理完成，已从服务器删除 ${op.episodes.length} 个 Episode、${op.deleted_frames} 帧。剩余 ${op.remaining_episodes} 个 Episode，编号已更新。`);
    else if(op?.state==='failed' && !busy) message('清理失败：'+(op.error || '请重试')+'。所选项目仍在回收站。',true);
    buttons();
  }
