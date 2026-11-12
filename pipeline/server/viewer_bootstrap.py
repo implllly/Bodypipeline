@@ -30,6 +30,7 @@ SCORE_FILTER_PATCH = Path(__file__).with_name("viewer_score_filter.patch")
 EPISODE_LENGTHS_PATCH = Path(__file__).with_name("viewer_episode_lengths.patch")
 UI_ASSETS = Path(__file__).with_name("viewer_ui")
 THEME_SCRIPT = Path(__file__).parents[1] / "web/theme.js"
+PARQUET_ZSTD_MARKER = "// bodypipeline: zstd parquet support v1"
 
 
 def patch_cache(cache: Path):
@@ -144,6 +145,7 @@ def patch_presentation(cache: Path):
     patch_score_filter(cache)
     patch_episode_lengths(cache)
     patch_subtask_review(cache)
+    patch_parquet_compression(cache)
     destinations = {
         "data-recharts.tsx": "src/components/data-recharts.tsx",
         "theme-toggle.tsx": "src/components/theme-toggle.tsx",
@@ -215,6 +217,113 @@ def patch_presentation(cache: Path):
     from pipeline.server.viewer_batch_preview import patch_batch_preview
 
     patch_batch_preview(cache)
+
+
+def patch_parquet_compression(cache: Path):
+    """Decode ZSTD Parquet in-browser and report unsupported pages honestly.
+
+    The pinned Visualizer ships hyparquet without optional decompressors and
+    treats every metadata read failure as "file not found". External LeRobot
+    producers commonly write ZSTD parquet, so a valid dataset appeared as
+    ``Episode 0 not found in metadata``.
+    """
+
+    from .viewer_annotations import _replace
+
+    source = cache / "source/src"
+    (source / "utils/fzstd.mjs").write_bytes(
+        (UI_ASSETS / "fzstd.mjs").read_bytes()
+    )
+    utils = source / "utils/parquetUtils.ts"
+    _replace(
+        utils,
+        'import { authHeaders } from "./auth";',
+        'import { authHeaders } from "./auth";\n'
+        'import { decompress as decompressZstd } from "./fzstd.mjs";\n'
+        + PARQUET_ZSTD_MARKER,
+    )
+    _replace(
+        utils,
+        "type ParquetFile = ArrayBuffer | AsyncBuffer;",
+        "type ParquetFile = ArrayBuffer | AsyncBuffer;\n\n"
+        + PARQUET_ZSTD_MARKER
+        + "\n"
+        'const PARQUET_COMPRESSORS = {\n'
+        "  ZSTD: (bytes: Uint8Array, uncompressedSize: number) =>\n"
+        "    decompressZstd(bytes, new Uint8Array(uncompressedSize)),\n"
+        "};\n"
+        'export class DatasetFileMissingError extends Error {\n'
+        "  constructor(url: string) {\n"
+        "    super(`Dataset file not found: ${url}`);\n"
+        '    this.name = "DatasetFileMissingError";\n'
+        "  }\n"
+        "}\n"
+        "export function isDatasetFileMissing(error: unknown): boolean {\n"
+        "  return error instanceof DatasetFileMissingError;\n"
+        "}",
+    )
+    _replace(
+        utils,
+        "  const file = await asyncBufferFromUrl({\n"
+        "    url,\n"
+        '    requestInit: { cache: "no-store", headers: authHeaders() },\n'
+        "  });",
+        "  let file: AsyncBuffer;\n"
+        "  try {\n"
+        "    file = await asyncBufferFromUrl({\n"
+        "      url,\n"
+        '      requestInit: { cache: "no-store", headers: authHeaders() },\n'
+        "    });\n"
+        "  } catch (error) {\n"
+        "    if (error instanceof Error && /\\b404\\b/.test(error.message)) {\n"
+        "      throw new DatasetFileMissingError(url);\n"
+        "    }\n"
+        "    throw error;\n"
+        "  }",
+    )
+    _replace(
+        utils,
+        "      parquetRead({\n        file: fileBuffer,",
+        "      parquetRead({\n"
+        "        file: fileBuffer,\n"
+        "        compressors: PARQUET_COMPRESSORS,",
+    )
+    _replace(
+        utils,
+        "  return parquetReadObjects({\n    file: fileBuffer,",
+        "  return parquetReadObjects({\n"
+        "    file: fileBuffer,\n"
+        "    compressors: PARQUET_COMPRESSORS,",
+    )
+    fetch = source / "app/[org]/[dataset]/[episode]/fetch-data.ts"
+    _replace(
+        fetch,
+        "  fetchParquetFile,\n  formatStringWithVars,",
+        "  fetchParquetFile,\n  formatStringWithVars,\n  isDatasetFileMissing,",
+    )
+    _replace(
+        fetch,
+        "    } catch {\n"
+        "      if (fileIndex === 0) return;\n"
+        "      chunkIndex++;\n"
+        "      fileIndex = 0;\n"
+        "      continue;\n"
+        "    }",
+        "    } catch (error) {\n"
+        "      // bodypipeline: distinguish metadata decode errors from missing chunks\n"
+        "      if (!isDatasetFileMissing(error)) {\n"
+        "        throw new Error(\n"
+        "          `Failed to read episode metadata ${path}: ${\n"
+        "            error instanceof Error ? error.message : String(error)\n"
+        "          }`,\n"
+        "        );\n"
+        "      }\n"
+        "      if (fileIndex === 0) return;\n"
+        "      chunkIndex++;\n"
+        "      fileIndex = 0;\n"
+        "      continue;\n"
+        "    }",
+    )
 
 
 def patch_score_filter(cache: Path):
